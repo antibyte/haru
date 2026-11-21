@@ -1,0 +1,116 @@
+{
+  "version": 1,
+  "subject": "female",
+  "date": "2026-11-21",
+  "reference_generator": "Codex CLI image generation",
+  "reference_file": "reference.png",
+  "reference_sha256": "b42f93b0826d017eb518aeb195e3648f3c5a15ffe563bc591425f93ed8e7671c",
+  "prompt_file": "prompt.md",
+  "upload_file": "reference.png",
+  "varco": {
+    "flowId": "569f7763-02a8-4b5d-8119-c0712d0c6045",
+    "imageNodeId": "d4073ae5-4cdd-4680-aae7-e719f684d9b0",
+    "generateNodeId": "d2d88254-a92c-4eb5-9e16-cf743c7f3145",
+    "taskId": "32e7fc69-cc98-4745-9597-b59a953e3b02",
+    "intrinsics": {
+      "count": [
+        {
+          "type": "int",
+          "value": 1
+        }
+      ],
+      "polygonCount": [
+        {
+          "type": "int",
+          "value": 100000
+        }
+      ],
+      "topology": [
+        {
+          "type": "string",
+          "value": "tri"
+        }
+      ],
+      "textureSize": [
+        {
+          "type": "int",
+          "value": 2048
+        }
+      ],
+      "generateTexture": [
+        {
+          "type": "int",
+          "value": 1
+        }
+      ],
+      "usePbrTexture": [
+        {
+          "type": "int",
+          "value": 0
+        }
+      ],
+      "tPose": [
+        {
+          "type": "int",
+          "value": 0
+        }
+      ],
+      "useAlpha": [
+        {
+          "type": "int",
+          "value": 0
+        }
+      ],
+      "license": [
+        {
+          "type": "string",
+          "value": "PRIVATE"
+        }
+      ]
+    },
+    "status": "success",
+    "durationMinutes": 1.7
+  },
+  "retained_sources": {
+    "varco-source.glb": {
+      "bytes": 8617100,
+      "sha256": "c97381cb68de3566e283770cef216399533328d95683f8c4ca81a0b3b9fbe077"
+    }
+  },
+  "prepared": {
+    "date": "2026-11-21",
+    "tool": "Blender 5.3.0 (headless)",
+    "script": "assets/heads/build_head.py",
+    "validator": "assets/heads/validate_heads.py",
+    "landmarks_file": "assets/heads/female/landmarks.json",
+    "source_blend": {
+      "path": "assets/heads/female/source.blend",
+      "bytes": 3157463,
+      "sha256": "a9157e5c361e02a63fe3d352f0c387c48db17115da3955cd1932f785a4a479ce"
+    },
+    "runtime_glb": {
+      "path": "app/public/heads/female.glb",
+      "bytes": 3695132,
+      "sha256": "483698e4f4f97d00a809e8055fd59441237a5e61be019966f708eb0ae716ac36"
+    },
+    "triangles": 38574,
+    "vertices": 23280,
+    "morphTargets": [
+      "jawOpen",
+      "lipsWide",
+      "lipsRound",
+      "lipsPress",
+      "smile",
+      "browRaise",
+      "browFrown",
+      "blink"
+    ],
+    "texture": {
+      "mime": "image/jpeg",
+      "width": 1024,
+      "height": 1024,
+      "bytes": 81866
+    },
+    "validation": "ok"
+  }
+}

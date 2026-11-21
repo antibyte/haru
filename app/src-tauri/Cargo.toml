@@ -1,0 +1,47 @@
+[package]
+name = "haru"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "haru_lib"
+crate-type = ["rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.2.0", features = [] }
+
+[dependencies]
+tauri = { version = "2.5.1", features = [] }
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+thiserror = "2.0.12"
+base64 = "0.22.1"
+sha2 = "0.10.8"
+reqwest = { version = "0.12.15", default-features = false, features = ["rustls-tls", "stream"] }
+futures-util = "0.3.31"
+tokio = { version = "1.44.2", features = ["rt-multi-thread", "macros", "fs", "io-util", "time", "sync"] }
+cpal = "0.15.3"
+rubato = "0.16"      # stay on 0.16.x: 1.x has a different API
+rustfft = "6.2.0"
+libloading = "0.8"
+rtrb = "0.3"
+sonora = "0.3.0"     # WebRTC APM port (AEC3/NS/AGC2), pure Rust; no default features; "examples" (cpal 0.18 etc.) stays off
+fs2 = "0.4.3"
+hound = "3.5.1"
+
+[dev-dependencies]
+tiny_http = "0.12.0"
+tempfile = "3"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects"] }
+# DXGI adapter enumeration + PDH system-wide GPU memory counter (same 0.62 copy Tauri already pulls in).
+windows = { version = "0.62", features = ["Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_System_Performance"] }
+
+# The real-time audio path (resampling, FFT, ring buffers) must keep up with the model even under
+# `tauri dev`; an unoptimized debug build adds enough lag to trip the lag limit.
+[profile.dev]
+opt-level = 2
+
+[profile.dev.package."*"]
+opt-level = 3

@@ -1,0 +1,168 @@
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  VULKAN_VERSION: 1.4.357.0
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+      - run: npm --prefix app ci
+      - run: npm --prefix app run test
+      # The frontend build must precede cargo: generate_context!() needs frontendDist (app/dist).
+      - run: npm --prefix app run build
+      - run: cargo test --manifest-path app/src-tauri/Cargo.toml --lib
+
+  backend-vulkan:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Name the speech.cpp build
+        id: key
+        shell: pwsh
+        run: |
+          $commit = (git ls-tree HEAD extern/speech.cpp).Split()[2]
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationVersion
+          $script = (Get-FileHash scripts/build-backends.ps1 -Algorithm SHA256).Hash.Substring(0, 12)
+          Add-Content $env:GITHUB_OUTPUT "key=speech-vulkan-$commit-vk$env:VULKAN_VERSION-vs$vs-$script"
+      - uses: actions/cache@v4
+        with:
+          path: build/speech-vulkan
+          key: ${{ steps.key.outputs.key }}
+      - name: Install the Vulkan SDK
+        shell: pwsh
+        run: |
+          curl.exe -o $env:RUNNER_TEMP/VulkanSDK-Installer.exe -L "https://sdk.lunarg.com/sdk/download/${env:VULKAN_VERSION}/windows/vulkansdk-windows-X64-${env:VULKAN_VERSION}.exe"
+          & "$env:RUNNER_TEMP\VulkanSDK-Installer.exe" --accept-licenses --default-answer --confirm-command install
+          Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\${env:VULKAN_VERSION}"
+          Add-Content $env:GITHUB_PATH "C:\VulkanSDK\${env:VULKAN_VERSION}\bin"
+      - name: Build the Vulkan backend
+        shell: pwsh
+        run: pwsh scripts/build-backends.ps1 -Variants vulkan
+      - uses: actions/upload-artifact@v4
+        with:
+          name: backend-vulkan
+          path: app/src-tauri/backends/vulkan
+          if-no-files-found: error
+
+  backend-cuda:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Name the speech.cpp build
+        id: key
+        shell: pwsh
+        run: |
+          $commit = (git ls-tree HEAD extern/speech.cpp).Split()[2]
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationVersion
+          $script = (Get-FileHash scripts/build-backends.ps1 -Algorithm SHA256).Hash.Substring(0, 12)
+          Add-Content $env:GITHUB_OUTPUT "key=speech-cuda-$commit-cuda12.6.3-vs$vs-$script"
+      - uses: actions/cache@v4
+        with:
+          path: build/speech-cuda
+          key: ${{ steps.key.outputs.key }}
+      - name: Install the CUDA toolkit
+        uses: Jimver/cuda-toolkit@v0.2.24
+        with:
+          cuda: '12.6.3'
+          method: network
+          sub-packages: '["nvcc","cudart","cublas","cublas_dev","thrust","visual_studio_integration"]'
+      # No GPU on the runner: this only proves that the CUDA variant compiles and links.
+      # build-backends.ps1 runs `speech --version` and `devices --json`, which must not need a GPU.
+      - name: Build the CUDA backend
+        shell: pwsh
+        run: pwsh scripts/build-backends.ps1 -Variants cuda
+      - uses: actions/upload-artifact@v4
+        with:
+          name: backend-cuda
+          path: app/src-tauri/backends/cuda
+          if-no-files-found: error
+
+  bundle:
+    runs-on: windows-2025
+    needs: [test, backend-vulkan, backend-cuda]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: backend-vulkan
+          path: app/src-tauri/backends/vulkan
+      - uses: actions/download-artifact@v4
+        with:
+          name: backend-cuda
+          path: app/src-tauri/backends/cuda
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+      - run: npm --prefix app ci
+      - run: npm --prefix app run tauri build -- --bundles nsis
+      - uses: actions/upload-artifact@v4
+        with:
+          name: haru-windows-x64-nsis
+          path: app/src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config libssl-dev libasound2-dev \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev patchelf \
+            libvulkan-dev glslc spirv-headers libcurl4-openssl-dev
+      - run: npm --prefix app ci
+      - run: npm --prefix app run test
+      - run: npm --prefix app run build
+      - run: cargo test --manifest-path app/src-tauri/Cargo.toml --lib
+      - name: Name the speech.cpp build
+        id: key
+        run: |
+          commit="$(git ls-tree HEAD extern/speech.cpp | awk '{print $3}')"
+          script="$(sha256sum scripts/build-backends.sh | cut -c1-12)"
+          echo "key=speech-linux-vulkan-$commit-$script" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: build/speech-vulkan
+          key: ${{ steps.key.outputs.key }}
+      - name: Build the Vulkan backend (portability check)
+        run: bash scripts/build-backends.sh vulkan

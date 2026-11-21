@@ -1,0 +1,3 @@
+[submodule "extern/speech.cpp"]
+	path = extern/speech.cpp
+	url = https://github.com/nyosegawa/speech.cpp

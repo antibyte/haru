@@ -1,0 +1,11 @@
+{
+  "stateEvent": {"state":"talking","backend":"vulkan","device":"Intel(R) Arc(TM) B580 Graphics","error":null,"warning":null},
+  "stateEventNotice": {"state":"talking","backend":"vulkan","device":"Intel(R) Arc(TM) B580 Graphics","error":null,"warning":null,"notice":"Neuer Gesprächsabschnitt – Haru fängt frisch an."},
+  "stateEventError": {"state":"error","backend":null,"device":null,"error":{"code":"noBackend","message":"Keine Backend-Variante gefunden.","detail":null},"warning":null},
+  "downloadProgress": {"event":"progress","data":{"downloaded":1048576,"total":6623102720,"bytesPerSec":52428800.0}},
+  "downloadVerifying": {"event":"verifying","data":{"done":1048576,"total":6623102720}},
+  "downloadDone": {"event":"done","data":{"path":"C:\\models\\Haru-4B-Q8_0.gguf"}},
+  "downloadError": {"event":"error","data":{"message":"Netzwerkfehler"}},
+  "vizFrame": {"t":1.5,"model":{"rms":0.25,"bands":[0.0,0.5,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0]},"mic":{"rms":0.0,"bands":[0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0]},"latencyMs":312.0,"words":[{"seq":7,"text":" Hal"}]},
+  "settingsDefault": {"language":"de","name":"Haru","persona":"","gender":null,"backchannel":null,"speakFirst":true,"temperature":0.7,"topK":25,"voicePath":null,"inputDevice":null,"outputDevice":null,"echoCancellation":true,"backend":"auto","device":"auto","quality":"auto","subtitles":false,"showFace":true,"lagLimitSecs":1.0,"headphoneHintSeen":false}
+}

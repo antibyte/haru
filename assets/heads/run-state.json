@@ -1,0 +1,27 @@
+{
+  "flowId": "569f7763-02a8-4b5d-8119-c0712d0c6045",
+  "subjects": {
+    "female": {
+      "imageNodeId": "d4073ae5-4cdd-4680-aae7-e719f684d9b0",
+      "generateNodeId": "d2d88254-a92c-4eb5-9e16-cf743c7f3145",
+      "uploadedFile": "reference.png",
+      "taskId": "32e7fc69-cc98-4745-9597-b59a953e3b02",
+      "status": "success",
+      "finishedObservedAt": "2026-11-21T00:14:33.097Z",
+      "outputIndex": 0
+    },
+    "male": {
+      "imageNodeId": "6eafa8b1-81e8-4159-aa64-c2c5c7afff4e",
+      "generateNodeId": "55e9b273-99ed-41e5-9d71-4e5d9d71025b",
+      "uploadedFile": "reference.png",
+      "taskId": "b8ea77b1-fd75-4e80-a514-8934f3a52529",
+      "status": "success",
+      "finishedObservedAt": "2026-11-21T00:14:33.097Z",
+      "outputIndex": 0
+    }
+  },
+  "submitted": true,
+  "submittedAt": "2026-11-21T00:12:49.452Z",
+  "submissionConfirmation": "confirmed",
+  "executionId": "a164a97c-93d8-4a88-a753-46a863f56f80"
+}
