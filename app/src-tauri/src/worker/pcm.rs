@@ -2,6 +2,7 @@
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 
 use crate::error::{ErrorCode, HaruError};
+use crate::messages::MsgKey;
 
 pub fn encode_i16(samples: &[i16]) -> String {
     let mut bytes = Vec::with_capacity(samples.len() * 2);
@@ -22,9 +23,9 @@ pub fn encode_f32(samples: &[f32]) -> String {
 pub fn decode_i16(s: &str) -> Result<Vec<i16>, HaruError> {
     let bytes = STANDARD
         .decode(s)
-        .map_err(|e| HaruError::new(ErrorCode::Worker, "Ungültige Audiodaten vom Worker").with_detail(e.to_string()))?;
+        .map_err(|e| HaruError::new(ErrorCode::Worker, MsgKey::WorkerBadAudio).with_detail(e.to_string()))?;
     if bytes.len() % 2 != 0 {
-        return Err(HaruError::new(ErrorCode::Worker, "Ungültige Audiodaten vom Worker")
+        return Err(HaruError::new(ErrorCode::Worker, MsgKey::WorkerBadAudio)
             .with_detail(format!("odd PCM byte length {}", bytes.len())));
     }
     Ok(bytes.chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect())

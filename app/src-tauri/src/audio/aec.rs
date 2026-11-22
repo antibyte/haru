@@ -155,6 +155,11 @@ pub struct VoiceProcessor {
     capture_out: Vec<f32>,
     render_frames: u64,
     capture_frames: u64,
+    /// Diagnostics: energy of the reference as fed to the AEC (capture rate, 10 ms frames).
+    render_sumsq: f64,
+    render_samples: u64,
+    /// Diagnostics (`HARU_DUMP_DIR`): the reference exactly as fed, when enabled.
+    render_rec: Option<Vec<f32>>,
     #[cfg(test)]
     fail_next: bool,
 }
@@ -189,6 +194,9 @@ impl VoiceProcessor {
             capture_out: vec![0.0; frame],
             render_frames: 0,
             capture_frames: 0,
+            render_sumsq: 0.0,
+            render_samples: 0,
+            render_rec: None,
             #[cfg(test)]
             fail_next: false,
         })
@@ -206,6 +214,11 @@ impl VoiceProcessor {
             let (apm, src, dst) = (&mut self.apm, &self.render_frame, &mut self.render_out);
             guarded(|| apm.process_render_f32(&[src.as_slice()], &mut [dst.as_mut_slice()]))?;
             self.render_frames += 1;
+            self.render_sumsq += self.render_frame.iter().map(|x| (*x as f64) * (*x as f64)).sum::<f64>();
+            self.render_samples += self.render_frame.len() as u64;
+            if let Some(r) = self.render_rec.as_mut() {
+                r.extend_from_slice(&self.render_frame);
+            }
         }
         Ok(())
     }
@@ -246,6 +259,30 @@ impl VoiceProcessor {
 
     pub fn estimated_delay_ms(&self) -> Option<i32> {
         self.apm.statistics().delay_ms
+    }
+
+    /// All of sonora's statistics (diagnostics).
+    pub fn stats(&self) -> sonora::AudioProcessingStats {
+        self.apm.statistics().clone()
+    }
+
+    /// RMS of the reference fed so far (diagnostics).
+    pub fn render_rms(&self) -> f64 {
+        if self.render_samples == 0 {
+            0.0
+        } else {
+            (self.render_sumsq / self.render_samples as f64).sqrt()
+        }
+    }
+
+    /// Starts or stops keeping a copy of the reference as fed (diagnostics, off by default).
+    pub fn record_render(&mut self, on: bool) {
+        self.render_rec = on.then(Vec::new);
+    }
+
+    /// Takes the reference recorded since the last call.
+    pub fn take_render_record(&mut self) -> Vec<f32> {
+        self.render_rec.as_mut().map(std::mem::take).unwrap_or_default()
     }
 
     pub fn capture_frames(&self) -> u64 {

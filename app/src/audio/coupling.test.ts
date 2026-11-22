@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { haruHue, hsvToRgb, micHue, vorticityFor } from './coupling';
+import type { FluidSim } from '../fluid/sim';
+import type { SmoothedAudio } from './features';
+import { AudioCoupling, haruHue, hsvToRgb, micHue, vorticityFor } from './coupling';
+
+const fakeSim = (): FluidSim => ({} as unknown as FluidSim);
+const silentAudio = (): SmoothedAudio => ({ modelRms: 0, modelCentroid: 0.5, micRms: 0, micCentroid: 0.5 });
 
 describe('coupling math', () => {
   it('vorticity_base_and_max', () => {
@@ -21,5 +26,27 @@ describe('coupling math', () => {
     expect(hsvToRgb(0, 1, 1)).toEqual([1, 0, 0]);
     expect(hsvToRgb(120, 1, 1)).toEqual([0, 1, 0]);
     expect(hsvToRgb(240, 1, 1)).toEqual([0, 0, 1]);
+  });
+});
+
+describe('ink palettes', () => {
+  it('ember palette keeps Haru ink in red-orange', () => {
+    const c = new AudioCoupling(fakeSim());
+    c.setPalette('ember');
+    for (const cen of [0, 0.25, 0.5, 0.75, 1]) {
+      const [r, g, b] = c.haruTint({ ...silentAudio(), modelCentroid: cen });
+      expect(r).toBeGreaterThan(g);
+      expect(g).toBeGreaterThanOrEqual(b); // red >= green >= blue: hue 0-45 degrees
+      const [cr, cg, cb] = c.haruColor({ ...silentAudio(), modelCentroid: cen });
+      expect(cr).toBeGreaterThan(cg);
+      expect(cg).toBeGreaterThanOrEqual(cb);
+    }
+  });
+  it('neutral palette is unchanged', () => {
+    const c = new AudioCoupling(fakeSim());
+    expect(c.haruTint({ ...silentAudio(), modelCentroid: 0.3 })).toEqual(hsvToRgb(haruHue(0.3 * 0.55), 0.85, 1));
+    c.setPalette('ember');
+    c.setPalette('neutral');
+    expect(c.haruTint({ ...silentAudio(), modelCentroid: 0.3 })).toEqual(hsvToRgb(haruHue(0.3 * 0.55), 0.85, 1));
   });
 });

@@ -4,6 +4,8 @@ pub mod cards;
 pub mod commands;
 pub mod error;
 pub mod ipc;
+pub mod locale;
+pub mod messages;
 pub mod model_fetch;
 pub mod paths;
 pub mod session;

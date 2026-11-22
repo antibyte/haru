@@ -27,6 +27,19 @@ JOBS="$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
 
 git submodule update --init --recursive extern/speech.cpp
 
+# Apply patches/ggml to the pinned ggml submodule; a patch already applied is skipped.
+shopt -s nullglob
+for patch in "$ROOT"/patches/ggml/*.patch; do
+  if git -C extern/speech.cpp/ggml apply --reverse --check "$patch" >/dev/null 2>&1; then
+    echo "ggml patch already applied: $(basename "$patch")"
+  else
+    git -C extern/speech.cpp/ggml apply --check "$patch"       || { echo "ggml patch neither applies nor is applied: $patch" >&2; exit 1; }
+    git -C extern/speech.cpp/ggml apply "$patch"
+    echo "ggml patch applied: $(basename "$patch")"
+  fi
+done
+shopt -u nullglob
+
 for v in "${VARIANTS[@]}"; do
   echo "=== Backend variant: $v ==="
   build_dir="build/speech-$v"

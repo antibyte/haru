@@ -10,6 +10,7 @@ uniform float uDissipation;
 uniform float uRestStrength;
 uniform float uIsDye;
 uniform float uAgeing;       // colour ageing speed multiplier
+uniform float uEmber;        // 0 = neutral ageing (gold -> magenta -> violet), 1 = ember ageing (amber -> crimson -> ash red)
 uniform float uSeed;         // per-step seed for the stochastic rounding below
 in vec2 vUv;
 out vec4 o;
@@ -39,10 +40,11 @@ void main() {
     // Ageing: ink cools from hot gold/white through magenta into deep violet as it fades.
     // green is converted partly into blue and dies first, red follows, blue lives longest.
     float k = uAgeing * uDt;
-    r.b += r.g * 0.55 * k;
-    r.g *= exp(-1.5 * k);
-    r.r *= exp(-0.75 * k);
-    r.b *= exp(-0.32 * k);
+    // ember: no green->blue conversion, blue dies fast, red lives longest (hue stays 0..40 degrees, never violet)
+    r.b += r.g * 0.55 * k * (1.0 - uEmber);
+    r.g *= exp(-mix(1.5, 1.7, uEmber) * k);
+    r.r *= exp(-mix(0.75, 0.5, uEmber) * k);
+    r.b *= exp(-mix(0.32, 2.5, uEmber) * k);
     // fp16 storage stalls: at very short steps (k ~ 1e-3, i.e. >500 fps) the per-step decay of a channel is below half
     // an ulp, so round-to-nearest returns the old value and that channel never fades (single-channel specks).
     // Adding +-0.5 ulp of noise before the store makes the rounding unbiased (stochastic), so the decay averages out.

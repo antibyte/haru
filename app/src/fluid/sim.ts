@@ -389,6 +389,7 @@ export class FluidSim {
     gl.uniform1f(p.uniforms['uDissipation'], prm.densityDissipation);
     gl.uniform1f(p.uniforms['uIsDye'], 1);
     gl.uniform1f(p.uniforms['uAgeing'], prm.ageing);
+    gl.uniform1f(p.uniforms['uEmber'], prm.ember);
     gl.uniform1f(p.uniforms['uSeed'], (this.stepNo++ % 9973) * 0.37);
     drawQuad(gl, this.dyeT.write);
     this.dyeT.swap();

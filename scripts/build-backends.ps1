@@ -38,6 +38,21 @@ if ('cuda' -in $Variants) {
 git submodule update --init --recursive extern/speech.cpp
 Assert-Native 'git submodule update'
 
+# Apply patches/ggml to the pinned ggml submodule; a patch already applied is skipped.
+$ggmlDir = Join-Path $Root 'extern/speech.cpp/ggml'
+foreach ($patch in Get-ChildItem (Join-Path $Root 'patches/ggml') -Filter '*.patch' -ErrorAction SilentlyContinue | Sort-Object Name) {
+  git -C $ggmlDir apply --reverse --check $patch.FullName 2>$null
+  if ($LASTEXITCODE -eq 0) {
+    Write-Host "ggml patch already applied: $($patch.Name)"
+    continue
+  }
+  git -C $ggmlDir apply --check $patch.FullName
+  Assert-Native "ggml patch $($patch.Name) neither applies nor is applied"
+  git -C $ggmlDir apply $patch.FullName
+  Assert-Native "git apply $($patch.Name)"
+  Write-Host "ggml patch applied: $($patch.Name)"
+}
+
 foreach ($v in $Variants) {
   Write-Host "=== Backend variant: $v ($Config) ===" -ForegroundColor Cyan
   $buildDir = "build/speech-$v"

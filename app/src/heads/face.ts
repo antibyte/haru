@@ -2,6 +2,7 @@ import type { GLContext } from '../gl/context';
 import type { FluidSim } from '../fluid/sim';
 import type { RGB } from '../fluid/params';
 import type { SmoothedAudio } from '../audio/features';
+import type { Persona } from '../ipc/types';
 import { parseGlb } from './glb';
 import { HeadPass } from './headpass';
 import { LipsyncController, type LipMode } from './lipsync';
@@ -32,7 +33,22 @@ export interface FacePost {
   size: number;
   /** per-head presence gain */
   gain: number;
+  /** 1 = textured head: the composite uses `albedo` instead of porcelain (0 = exactly the porcelain look) */
+  textured: number;
+  /** albedo attachment of the G-buffer (only meaningful when textured) */
+  albedo: WebGLTexture | null;
+  /** upper bound of the face visibility for textured heads (porcelain keeps its own 0.28) */
+  visMax: number;
 }
+
+export type HeadKey = 'female' | 'male' | 'daemon';
+
+/** Heads whose embedded base colour is used as albedo (the rest stays porcelain). */
+export const TEXTURED_HEADS: ReadonlySet<string> = new Set(['daemon']);
+/** Per-head presence gain, tuned per asset. */
+export const HEAD_GAIN: Record<HeadKey, number> = { female: 1.3, male: 1.0, daemon: 1.3 };
+/** Visibility cap of textured heads in the composite (uHeadVisMax); porcelain heads stay at 0.28. */
+export const HEAD_VIS_MAX = 0.42;
 
 const PRESENCE_OFF = 0.004;
 
@@ -45,6 +61,7 @@ export class FaceLayer {
   private readonly lip = new LipsyncController();
   private enabled = true;
   private gender: 'female' | 'male' = 'female';
+  private persona: Persona | null = null;
   private mode: LipMode = 'boot';
   private loaded: string | null = null;
   private loading: string | null = null;
@@ -55,9 +72,17 @@ export class FaceLayer {
   private active = false;
   private frameNo = 0;
   private lastMist = -1;
-  private post: FacePost = { texture: null as unknown as WebGLTexture, amount: 0, light: [0, 0, 1], texel: [1, 1], focus: [0.5, 0.5], size: 0.8, gain: 1 };
+  private post: FacePost = { texture: null as unknown as WebGLTexture, amount: 0, light: [0, 0, 1], texel: [1, 1], focus: [0.5, 0.5], size: 0.8, gain: 1, textured: 0, albedo: null, visMax: HEAD_VIS_MAX };
 
-  constructor(glc: GLContext, private readonly log: (msg: string) => void = (m) => console.warn(m)) {
+  private readonly gl: WebGL2RenderingContext;
+
+  /** `textured`: head keys whose embedded image is used as albedo (default TEXTURED_HEADS; debug may add 'female'). */
+  constructor(
+    glc: GLContext,
+    private readonly log: (msg: string) => void = (m) => console.warn(m),
+    private readonly textured: ReadonlySet<string> = TEXTURED_HEADS,
+  ) {
+    this.gl = glc.gl;
     this.pass = new HeadPass(glc);
   }
 
@@ -73,6 +98,17 @@ export class FaceLayer {
     this.maybeLoad();
   }
 
+  /** null / angel = porcelain head by gender; daemon = daemon.glb. */
+  setPersona(p: Persona | null): void {
+    if (p === this.persona) return;
+    this.persona = p;
+    this.maybeLoad();
+  }
+
+  private get key(): HeadKey {
+    return this.persona === 'daemon' ? 'daemon' : this.gender;
+  }
+
   setMode(m: LipMode): void {
     this.mode = m;
     if (m !== 'talking') this.lip.reset();
@@ -84,29 +120,66 @@ export class FaceLayer {
   }
 
   private url(): string {
-    return `${import.meta.env.BASE_URL}heads/${this.gender}.glb`;
+    return `${import.meta.env.BASE_URL}heads/${this.key}.glb`;
   }
 
-  /** Loads lazily: only once the conversation starts (and again when the gender changes). */
+  /** Decodes the embedded base colour into an sRGB mipmapped texture; null (porcelain) on any failure. */
+  private async decodeAlbedo(blob: Blob | null, key: string): Promise<WebGLTexture | null> {
+    if (!blob) {
+      this.log(`face: ${key} has no embedded base colour; rendering it as porcelain`);
+      return null;
+    }
+    try {
+      // glTF UV origin is top-left = first image row = texture t 0, so the image is uploaded unflipped.
+      const bmp = await createImageBitmap(blob, { imageOrientation: 'none', premultiplyAlpha: 'none', colorSpaceConversion: 'none' });
+      const gl = this.gl;
+      const tex = gl.createTexture()!;
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+      const levels = Math.floor(Math.log2(Math.max(bmp.width, bmp.height))) + 1;
+      gl.texStorage2D(gl.TEXTURE_2D, levels, gl.SRGB8_ALPHA8, bmp.width, bmp.height);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, bmp);
+      gl.generateMipmap(gl.TEXTURE_2D);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+      bmp.close();
+      return tex;
+    } catch (e) {
+      this.log(`face: albedo of ${key} could not be decoded (${(e as Error).message}); rendering it as porcelain`);
+      return null;
+    }
+  }
+
+  /** Loads lazily: only once the conversation starts (and again when the head changes). */
   private maybeLoad(): void {
     if (!this.enabled || this.mode !== 'talking') return;
     const url = this.url();
     if (this.loaded === url || this.loading === url || this.failed.has(url)) return;
+    const key = this.key;
     this.loading = url;
     void (async () => {
       try {
         const res = await fetch(url);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const glb = parseGlb(await res.arrayBuffer());
-        if (this.loading !== url) return; // superseded by a gender change
+        const albedo = this.textured.has(key) ? await this.decodeAlbedo(glb.image, key) : null;
+        if (this.loading !== url) { // superseded by a head change
+          if (albedo) this.gl.deleteTexture(albedo);
+          return;
+        }
         this.pass.setHead(glb);
+        this.pass.setAlbedo(albedo);
         this.loaded = url;
       } catch (e) {
         this.failed.add(url);
         this.log(`face: ${url} could not be loaded (${(e as Error).message}); rendering without a face`);
       } finally {
         if (this.loading === url) this.loading = null;
-        if (this.loaded !== null && this.loaded !== this.url()) this.maybeLoad(); // gender changed meanwhile
+        if (this.loaded !== null && this.loaded !== this.url()) this.maybeLoad(); // head changed meanwhile
       }
     })();
   }
@@ -147,7 +220,8 @@ export class FaceLayer {
     const size = Math.max(0.2, sp[8].y - sp[7].y + 0.1);
     this.post = {
       texture: this.pass.texture!, amount: out.presence, light: [lx / n, ly / n, lz / n],
-      texel: [1 / this.pass.width, 1 / this.pass.height], focus: [fx, fy], size, gain: this.gender === 'male' ? 1.0 : 1.3,
+      texel: [1 / this.pass.width, 1 / this.pass.height], focus: [fx, fy], size, gain: HEAD_GAIN[this.key],
+      textured: this.pass.textured ? 1 : 0, albedo: this.pass.albedoTexture, visMax: HEAD_VIS_MAX,
     };
   }
 

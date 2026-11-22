@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use crate::messages::UiText;
 use crate::{error::HaruError, settings::Settings};
 
 pub const STATE_EVENT: &str = "haru:state";
@@ -14,9 +15,9 @@ pub struct StateEvent {
     pub backend: Option<String>,  // "cuda" | "vulkan" | "metal" | "cpu"
     pub device: Option<String>,   // device description, e.g. "Intel(R) Arc(TM) B580 Graphics"
     pub error: Option<HaruError>,
-    pub warning: Option<String>,  // e.g. CPU-is-slow, backend switched after crash
+    pub warning: Option<UiText>,  // e.g. CPU-is-slow, backend switched after crash
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub notice: Option<String>,   // one-off info, e.g. the conversation continued in a fresh segment
+    pub notice: Option<UiText>,   // one-off info, e.g. the conversation continued in a fresh segment
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -25,7 +26,7 @@ pub enum DownloadEvent {
     Progress { downloaded: u64, total: u64, bytes_per_sec: f64 },
     Verifying { done: u64, total: u64 },
     Done { path: String },
-    Error { message: String },
+    Error(UiText),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)] #[serde(rename_all = "camelCase")]
@@ -56,12 +57,13 @@ pub struct BackendOptions { pub variants: Vec<String>, pub devices: Vec<DeviceIn
 #[derive(Clone, Debug, Serialize)] #[serde(rename_all = "camelCase")]
 pub struct AttemptInfo { pub backend: String, pub device: String, pub description: String }
 #[derive(Clone, Debug, Serialize)] #[serde(rename_all = "camelCase")]
-pub struct BootInfo { pub backend: String, pub device: String, pub device_name: String, pub model_path: String, pub plan: Vec<AttemptInfo>, pub warning: Option<String> }
+pub struct BootInfo { pub backend: String, pub device: String, pub device_name: String, pub model_path: String, pub plan: Vec<AttemptInfo>, pub warning: Option<UiText> }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::error::ErrorCode;
+    use crate::messages::{MsgKey, UiText};
     use serde_json::{json, Value};
 
     #[test]
@@ -74,11 +76,21 @@ mod tests {
         assert_eq!(ser(&state), fx["stateEvent"]);
 
         let state_err = StateEvent { state: AppState::Error, backend: None, device: None,
-            error: Some(HaruError::new(ErrorCode::NoBackend, "Keine Backend-Variante gefunden.")), warning: None, notice: None };
+            error: Some(HaruError::new(ErrorCode::NoBackend, MsgKey::NoBackend)), warning: None, notice: None };
         assert_eq!(ser(&state_err), fx["stateEventError"]);
 
-        let state_notice = StateEvent { notice: Some("Neuer Gesprächsabschnitt – Haru fängt frisch an.".into()), ..state.clone() };
+        let state_notice = StateEvent { notice: Some(UiText::new(MsgKey::SegmentRenewed)), ..state.clone() };
         assert_eq!(ser(&state_notice), fx["stateEventNotice"]);
+
+        let state_warning = StateEvent { state: AppState::Ready, backend: Some("vulkan".into()),
+            device: Some("Intel(R) UHD Graphics".into()), error: None, notice: None,
+            warning: Some(UiText::new(MsgKey::SmallGpu).with_param("device", "Intel(R) UHD Graphics")) };
+        assert_eq!(ser(&state_warning), fx["stateEventWarning"]);
+
+        let disk = HaruError::new(ErrorCode::DiskSpace, MsgKey::DiskSpace).with_param("need", 7.5).with_param("free", 2.5);
+        assert_eq!(ser(&disk), fx["errorDiskSpace"]);
+
+        assert_eq!(ser(&MsgKey::ALL), fx["messageKeys"]);
 
         let p = DownloadEvent::Progress { downloaded: 1_048_576, total: 6_623_102_720, bytes_per_sec: 52_428_800.0 };
         assert_eq!(ser(&p), fx["downloadProgress"]);
@@ -86,7 +98,7 @@ mod tests {
         assert_eq!(ser(&v), fx["downloadVerifying"]);
         let d = DownloadEvent::Done { path: "C:\\models\\Haru-4B-Q8_0.gguf".into() };
         assert_eq!(ser(&d), fx["downloadDone"]);
-        let e = DownloadEvent::Error { message: "Netzwerkfehler".into() };
+        let e = DownloadEvent::Error(UiText::new(MsgKey::DownloadFailed));
         assert_eq!(ser(&e), fx["downloadError"]);
 
         let mut bands = [0.0f32; 16];
@@ -96,6 +108,11 @@ mod tests {
         assert_eq!(ser(&viz), fx["vizFrame"]);
 
         assert_eq!(ser(&Settings::default()), fx["settingsDefault"]);
+
+        // `start_conversation` takes the persona as a JS argument; the fixture must deserialize into it.
+        let persona: crate::cards::Persona = serde_json::from_value(fx["startConversation"]["persona"].clone()).unwrap();
+        assert_eq!(persona, crate::cards::Persona::Daemon);
+        assert_eq!(serde_json::to_value(persona).unwrap(), fx["startConversation"]["persona"]);
         let _ = json!(null);
     }
 

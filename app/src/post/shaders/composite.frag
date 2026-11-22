@@ -19,6 +19,10 @@ uniform vec2 uHeadTexel;    // G-buffer texel in UV
 uniform vec2 uFocus;        // face centre (eyes-nose-mouth) in UV
 uniform float uFaceSize;    // head height in UV y
 uniform float uHeadGain;    // per-head presence normalisation
+uniform sampler2D uHeadAlb; // head G-buffer albedo (rgb linear, a = textured coverage); only read when uHeadTextured > 0.5
+uniform float uHeadTextured; // 0 = porcelain (the original math, exactly), 1 = textured head (real albedo)
+uniform float uHeadVisMax;  // visibility cap for textured heads (porcelain keeps 0.28)
+uniform float uEmber;       // 0 = neutral look (exactly as before), 1 = daemon embers
 uniform float uHeadDebug;   // ?facedebug: show the whole face (no ink gate / dissolve)
 in vec2 vUv;
 out vec4 o;
@@ -147,7 +151,12 @@ void main() {
   if (cov > 0.002) {
     vec3 L = normalize(uHeadLight);
     float ndl = dot(hn, L);
-    float wrap = clamp((ndl + 0.55) / 1.55, 0.0, 1.0);            // soft wrapped Lambert
+    vec4 alb = vec4(0.0);
+    if (uHeadTextured > 0.5) alb = texture(uHeadAlb, uv);         // same uv as the G-buffer lookup (hg)
+    float texd = uHeadTextured * alb.a;
+    float wrapP = clamp((ndl + 0.55) / 1.55, 0.0, 1.0);           // soft wrapped Lambert
+    float wrapT = clamp((ndl + 0.15) / 1.15, 0.0, 1.0);           // harder terminator for skin
+    float wrap = mix(wrapP, wrapT, texd);
     float sss = exp(-(ndl - 0.1) * (ndl - 0.1) * 9.0);                  // warm subsurface glow around the terminator
     float fres = pow(max(1.0 - hn.z, 0.0), 2.4) * smoothstep(0.0, 0.35, hn.z); // rim, faded at grazing angles
     vec3 ink = inkBlur(uv);                                       // local ink: the only thing that reveals the face
@@ -171,16 +180,24 @@ void main() {
     vec2 q = vec2((uv.x - uFocus.x) * uAspect, uv.y - uFocus.y) / uFaceSize;
     float qy = q.y > 0.0 ? q.y / 0.30 : q.y / 0.26;
     float region = exp(-(q.x * q.x / 0.075 + qy * qy));
-    float vis = min(0.28, 0.28 * uHeadAmt * cov * region * mix(0.35, 1.0, smoothstep(0.12, 0.55, hn.z)) * mix(0.25, 1.0, dissolve) * mix(0.12, 1.0, gate) * words * (1.0 - inkMask) * uHeadGain);
+    float visCap = mix(0.28, uHeadVisMax, uHeadTextured);
+    float vis = min(visCap, visCap * uHeadAmt * cov * region * mix(0.35, 1.0, smoothstep(0.12, 0.55, hn.z)) * mix(0.25, 1.0, dissolve) * mix(0.12, 1.0, gate) * words * (1.0 - inkMask) * uHeadGain);
     if (uHeadDebug > 0.5) vis = 0.4 * cov;
     vec3 porcelain = vec3(0.96, 0.92, 0.88);
+    // textured heads: the real albedo (un-premultiplied against the filtered G-buffer edge), dark creature skin lifted so ink can reveal it
+    // (the VARCO texture is already x1.3 brightened at build time, so the lift is modest; a slight pull toward red-grey keeps it leathery, not human-pink)
+    vec3 skin = pow(max(alb.rgb / max(alb.a, 1e-3), 0.0), vec3(0.9)) * 1.3;
+    skin = mix(vec3(dot(skin, vec3(0.299, 0.587, 0.114))) * vec3(1.1, 0.78, 0.7), skin, 0.4);
+    porcelain = mix(porcelain, skin, texd);
     float shade = 0.1 + 0.9 * wrap;
     // relief: the ink itself is shaped by the face (lit side brighter, shadow side darker)
     col *= 1.0 + vis * 2.4 * max(shade - 0.3, 0.0);
     // porcelain lit by the ink
     vec3 lit = porcelain * tint * pow(max(0.08 + 0.92 * wrap, 0.0), 1.25) * (0.14 + 1.6 * inkS + 2.0 * inkR + 0.35 * uHeadDebug);
     lit += porcelain * fog * 1.2 * wrap;
-    lit += vec3(1.0, 0.55, 0.4) * sss * 0.12 * tint * inkS;
+    lit += vec3(1.0, 0.55, 0.4) * sss * 0.12 * tint * inkS * (1.0 - texd);
+    // moist low specular for skin
+    lit += texd * pow(max(dot(reflect(-L, hn), vec3(0.0, 0.0, 1.0)), 0.0), 18.0) * 0.25 * inkS * tint;
     lit += ink * fres * 3.0 * (0.3 + inkS);
     // additive but bounded: soft-saturate the face light so abundant ink can never turn the face into a bright solid
     vec3 add = lit * vis * 8.0;
@@ -197,7 +214,9 @@ void main() {
     float n2 = fbm(hp * 2.1 + vec2(-0.8 * t, 0.5 * t) + 11.3);
     float a = smoothstep(0.38, 0.8, n1);
     float b = smoothstep(0.42, 0.85, n2);
-    col += vec3(0.10, 0.28, 0.75) * 0.012 * a + vec3(0.05, 0.60, 0.55) * 0.006 * b;
+    vec3 hazeA = mix(vec3(0.10, 0.28, 0.75) * 0.012, vec3(0.55, 0.10, 0.04) * 0.010, uEmber);
+    vec3 hazeB = mix(vec3(0.05, 0.60, 0.55) * 0.006, vec3(0.45, 0.14, 0.03) * 0.005, uEmber);
+    col += hazeA * a + hazeB * b;
   }
 
   // --- light: bloom + rays

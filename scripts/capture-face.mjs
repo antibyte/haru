@@ -1,7 +1,8 @@
 // Captures the mock UI ("npm run dev" in app/, port 5173) in headless Chrome at a realistic ~60 fps,
 // for reviewing the face-in-fog visuals. One browser per call; prints fps / face presence per shot.
 //
-// usage: node scripts/capture-face.mjs <outDir> [female|male] [on|off] [seconds "7,11,19"]
+// usage: node scripts/capture-face.mjs <outDir> [female|male] [on|off] [seconds "7,11,19"] [angel|daemon]
+//   env QS=<extra query params>        appended to the URL, e.g. QS="head=female-textured"
 //   env BROWSER=<path to chrome.exe>   (default: Google Chrome)
 //   env NOSHOT=1                       only log fps / presence, no screenshots
 //
@@ -15,9 +16,13 @@ import { spawn } from 'node:child_process';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-const [outDir, gender = 'female', face = 'on', timesArg = '7,11,19'] = process.argv.slice(2);
+const [outDir, gender = 'female', face = 'on', timesArg = '7,11,19', persona = 'angel'] = process.argv.slice(2);
 if (!outDir) {
-  console.error('usage: node scripts/capture-face.mjs <outDir> [female|male] [on|off] [seconds]');
+  console.error('usage: node scripts/capture-face.mjs <outDir> [female|male] [on|off] [seconds] [angel|daemon]');
+  process.exit(2);
+}
+if (persona !== 'angel' && persona !== 'daemon') {
+  console.error(`unknown persona "${persona}" (angel|daemon)`);
   process.exit(2);
 }
 const times = timesArg.split(',').map(Number);
@@ -67,9 +72,9 @@ try {
       cb(t);
     });
   })();` });
-  await send('Page.navigate', { url: 'http://localhost:5173/?mock&debug' });
+  await send('Page.navigate', { url: `http://localhost:5173/?mock&debug${process.env.QS ? `&${process.env.QS.replace(/^[?&]/, '')}` : ''}` });
 
-  // dismiss the headphone hint, pick the head, press Start
+  // dismiss the headphone hint, pick the head, choose the persona
   let started = false;
   for (let i = 0; i < 60 && !started; i++) {
     await sleep(500);
@@ -77,7 +82,7 @@ try {
       const hint = document.querySelector('.overlay.hint.is-visible button'); if (hint) { hint.click(); return false; }
       const h = window.__haru; if (!h) return false;
       h.setFace(${face === 'on'}, '${gender === 'male' ? 'male' : 'female'}'); if (h.fpsEl) h.fpsEl.style.display = 'none';
-      const btn = document.querySelector('.overlay.start.is-visible .start-btn:not([disabled])');
+      const btn = document.querySelector('.overlay.chooser.is-visible .persona[data-persona="${persona}"]:not([disabled])');
       if (!btn) return false; btn.click(); return true; })()`);
   }
   if (!started) throw new Error('could not start the mock conversation (is the dev server on :5173 running?)');
@@ -89,7 +94,7 @@ try {
       modelRms: +(__haru.audio?.modelRms ?? 0).toFixed(3), quality: __haru.level })`);
     if (process.env.NOSHOT) { console.log(`t=${t}s`, stats); continue; }
     const shot = await send('Page.captureScreenshot', { format: 'png' });
-    const file = join(outDir, `${gender}-${face}-t${t}.png`);
+    const file = join(outDir, `${persona}-${gender}-${face}-t${t}.png`);
     writeFileSync(file, Buffer.from(shot.result.data, 'base64'));
     console.log(file, stats);
   }

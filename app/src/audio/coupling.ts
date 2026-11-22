@@ -15,6 +15,14 @@ export function haruHue(c: number): number {
   return (42 - 82 * c + 360) % 360;
 }
 
+/** Ember: black-red to crimson to orange (hue 4..38 degrees), the daemon's warm ink. */
+export function emberHue(c: number): number {
+  return 4 + 34 * clamp(c, 0, 1);
+}
+
+/** Ink palette: `neutral` = gold / coral / magenta (angel, start screen), `ember` = the daemon's red-orange glow. */
+export type InkPalette = 'neutral' | 'ember';
+
 /** Cool cyan to blue, degrees. */
 export function micHue(c: number): number {
   return 185 + 40 * c;
@@ -54,6 +62,9 @@ interface Palette { stops: RGB[] }
 const WARM: Palette = {
   stops: [[1.0, 0.62, 0.2], [1.0, 0.3, 0.45], [0.9, 0.2, 0.85], [1.0, 0.5, 0.18]],
 };
+const EMBER: Palette = {
+  stops: [[0.55, 0.04, 0.02], [1.0, 0.18, 0.04], [1.0, 0.45, 0.08], [0.85, 0.1, 0.03]],
+};
 const COOL: Palette = {
   stops: [[0.2, 0.55, 1.0], [0.45, 0.3, 1.0], [0.15, 0.8, 0.95], [0.2, 0.55, 1.0]],
 };
@@ -84,6 +95,8 @@ export class AudioCoupling {
   private quietMs = 0;
   private presence = 0; // 0 = talking with audio, 1 = ambient only
   private lastMode: CouplingMode = 'boot';
+  private palette: InkPalette = 'neutral';
+  private warm: Palette = WARM;
 
   constructor(private readonly sim: FluidSim, private readonly rng: () => number = Math.random) {
     this.orbiters = [
@@ -93,14 +106,26 @@ export class AudioCoupling {
     ];
   }
 
+  /** Switches the warm ink (two orbiters, 72 % of the ambient strokes, Haru's word ink) between neutral and ember. */
+  setPalette(p: InkPalette): void {
+    this.palette = p;
+    this.warm = p === 'ember' ? EMBER : WARM;
+    // ember: the cool orbiter becomes a dark ember too, so nothing blue/teal is left in the ambient ink
+    this.orbiters[2].pal = p === 'ember' ? EMBER : COOL;
+    this.orbiters[2].hue = 0.2;
+    this.orbiters[0].pal = this.warm;
+    this.orbiters[1].pal = this.warm;
+  }
+
   haruColor(a: SmoothedAudio): RGB {
-    const c = hsvToRgb(haruHue(a.modelCentroid), 0.85, 1);
+    const c = hsvToRgb(this.palette === 'ember' ? emberHue(a.modelCentroid) : haruHue(a.modelCentroid), 0.85, 1);
     const k = 1.5 + 2 * a.modelRms;
     return [c[0] * k, c[1] * k, c[2] * k];
   }
 
   /** Unscaled hue colour (max channel 1) for word ink. */
   haruTint(a: SmoothedAudio): RGB {
+    if (this.palette === 'ember') return hsvToRgb(emberHue(a.modelCentroid), 0.85, 1);
     return hsvToRgb(haruHue(a.modelCentroid * 0.55), 0.85, 1); // warm half of the range: gold to coral; ageing supplies magenta/violet
   }
 
@@ -175,8 +200,9 @@ export class AudioCoupling {
       this.micAcc += MIC_RATE_MAX * clamp(a.micRms / 0.2, 0, 1) * dt;
       while (this.micAcc >= 1) {
         this.micAcc -= 1;
-        const c = hsvToRgb(micHue(a.micCentroid), 0.8, 0.9);
-        const k = 0.6 + 2 * a.micRms;
+        const ember = this.palette === 'ember';
+        const c = hsvToRgb(micHue(a.micCentroid), ember ? 0.5 : 0.8, ember ? 0.7 : 0.9); // ember: darker, desaturated steel
+        const k = (0.6 + 2 * a.micRms) * (ember ? 0.55 : 1);
         this.strokes.push({
           x: 0.1 + this.rng() * 0.8, y: 0.02,
           vx: (this.rng() - 0.5) * 18, vy: 70 + 90 * a.micRms * 4,
@@ -193,7 +219,7 @@ export class AudioCoupling {
   private spawnAmbientStroke(dl: number): void {
     const r = this.rng;
     const warm = r() < 0.72;
-    const col = sample(warm ? WARM : COOL, r());
+    const col = sample(warm || this.palette === 'ember' ? this.warm : COOL, r());
     const edge = r();
     // enter from the margin and travel across the frame
     const x = edge < 0.5 ? 0.05 + r() * 0.2 : 0.75 + r() * 0.2;

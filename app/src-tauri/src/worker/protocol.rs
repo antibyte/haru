@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 use crate::error::{ErrorCode, HaruError};
+use crate::messages::MsgKey;
 
 pub const PROTOCOL: u32 = 4;
 
@@ -91,7 +92,7 @@ pub enum WorkerMsg {
 /// Non-JSON or unknown type is a worker defect (worker.md:24-25).
 pub fn parse_line(line: &str) -> Result<WorkerMsg, HaruError> {
     serde_json::from_str::<WorkerMsg>(line.trim()).map_err(|e| {
-        HaruError::new(ErrorCode::Worker, "Unerwartete Antwort vom Sprachmodell-Worker")
+        HaruError::new(ErrorCode::Worker, MsgKey::WorkerBadReply)
             .with_detail(format!("{e}: {}", line.chars().take(200).collect::<String>()))
     })
 }
@@ -102,7 +103,7 @@ pub fn check_ready(r: &Ready) -> Result<(), HaruError> {
         && r.model.frame_samples == Some(3200)
         && r.model.sample_rate == 24000;
     if ok { Ok(()) } else {
-        Err(HaruError::new(ErrorCode::Worker, "Das Modell oder der Worker ist nicht kompatibel.").with_detail(format!(
+        Err(HaruError::new(ErrorCode::Worker, MsgKey::WorkerIncompatible).with_detail(format!(
             "protocol={} task={} sample_rate={} frame_samples={:?}",
             r.protocol, r.model.task, r.model.sample_rate, r.model.frame_samples)))
     }
@@ -111,7 +112,7 @@ pub fn check_ready(r: &Ready) -> Result<(), HaruError> {
 pub fn worker_error(body: &WorkerErrorBody) -> HaruError {
     let mut detail = format!("{}: {}", body.code, body.message);
     if let Some(o) = &body.option { detail.push_str(&format!(" (option {o})")); }
-    let e = HaruError::new(ErrorCode::Worker, "Der Sprachmodell-Worker meldet einen Fehler.").with_detail(detail);
+    let e = HaruError::new(ErrorCode::Worker, MsgKey::WorkerError).with_detail(detail);
     if matches!(body.code.as_str(), "device" | "out_of_memory" | "internal") { e.backend_failure() } else { e }
 }
 

@@ -96,7 +96,10 @@ pub fn io_from_env() -> Option<ConversationIo> {
         None => None,
     };
     eprintln!("[haru test hook] test I/O active (wav: {}, no_playback: {no_playback})", input_samples.is_some());
-    Some(ConversationIo { input_samples, no_playback })
+    // `..Default::default()` only has an effect under cfg(test), where ConversationIo has an extra field.
+    #[allow(clippy::needless_update)]
+    let io = ConversationIo { input_samples, no_playback, ..Default::default() };
+    Some(io)
 }
 
 #[cfg(test)]

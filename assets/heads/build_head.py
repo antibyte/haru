@@ -1,7 +1,7 @@
 """
 build_head.py - build a Haru runtime head (Blender 5.3, headless).
 
-    blender -b -P build_head.py -- --subject female|male [--stage STAGE] [--work DIR]
+    blender -b -P build_head.py -- --subject female|male|daemon [--stage STAGE] [--work DIR]
 
 Stages
   renders   Import + clean + normalise the VARCO mesh (full resolution) and
@@ -37,7 +37,12 @@ from mathutils import Vector, Matrix
 from mathutils.bvhtree import BVHTree
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+SUBJECTS = ('female', 'male', 'daemon')
+TEXTURED_SUBJECTS = {'daemon': 2048}   # subject -> base-colour size; all others 1024
 REPO = os.path.dirname(os.path.dirname(HERE))
+# per-subject texture prep (only subjects listed here are touched; female/male stay identical)
+DARK_STRIP = {'daemon': 0.08}     # fraction of the atlas height reserved at v=0 as a free strip for the inner mouth
+TEX_GAIN = {'daemon': 1.3}        # linear brightness gain (VARCO base colour is darker than the reference)
 
 
 # --------------------------------------------------------------------------
@@ -55,6 +60,7 @@ def parse_args():
             i += 2
         else:
             i += 1
+    assert a['subject'] in SUBJECTS, f"unknown subject {a['subject']!r}; expected one of {SUBJECTS}"
     return a
 
 
@@ -132,7 +138,12 @@ def set_co(me, co):
 def normalise(ob, nrm):
     """Scale/translate so chin-to-crown = 1, origin at head centre."""
     co = get_co(ob.data)
-    crown = nrm.get('crown_z') or co[:, 2].max()
+    # chin/crown come from the picked landmarks (normalise.chin_z / crown_z in landmarks.json), never from the
+    # bounding box, so horns/ears cannot distort the scale. The bbox maximum is only a fallback for raw previews.
+    crown = nrm.get('crown_z')
+    if not crown:
+        crown = co[:, 2].max()
+        print('WARNING normalise: no crown_z picked, falling back to the highest vertex (horns would distort it)')
     s = 1.0 / (crown - nrm['chin_z'])
     origin = np.array([nrm.get('centre_x', 0.0), nrm['ear_y'], nrm['eye_z']])
     set_co(ob.data, (co - origin) * s)
@@ -388,8 +399,12 @@ def derive_landmarks(ob, lm):
     for k in ('eyeLouter', 'eyeLinner', 'eyeLtop', 'eyeLbottom'):
         del o[k]
     brow = {'peakL': o.pop('browL'), 'innerL': o.pop('browLinner')}
-    crown_i = int(np.argmax(P[:, 1]))
-    o['crown'] = [0.0, float(P[crown_i, 1]), float(P[crown_i, 2])]
+    if 'crown' in lm['picks']:      # picked crown (daemon: top of the skull between the horns)
+        c = pick('crown')
+        o['crown'] = [0.0, c[1], c[2]]
+    else:                            # legacy: highest vertex (fine for hornless heads)
+        crown_i = int(np.argmax(P[:, 1]))
+        o['crown'] = [0.0, float(P[crown_i, 1]), float(P[crown_i, 2])]
     o['jawPivot'][0] = 0.0
     o['noseTip'][0] = 0.0
     rnd = lambda v: [round(float(t), 5) for t in v]
@@ -576,6 +591,37 @@ def make_material(ob, size=1024):
 # --------------------------------------------------------------------------
 # mouth: rip the lip slit open and add a closed, dark inner-mouth pouch
 # --------------------------------------------------------------------------
+def reserve_dark_strip(ob, img, frac, gain=1.0):
+    """Dense VARCO atlases have no free block: squeeze the atlas content vertically into v in [frac, 1] and
+    leave the bottom strip free (dark) for the inner-mouth faces. UVs are remapped accordingly."""
+    w, h = img.size
+    a = np.empty(w * h * 4, dtype=np.float32)
+    img.pixels.foreach_get(a)
+    a = a.reshape(h, w, 4)
+    h0 = int(round(h * frac))
+    src = np.linspace(0, h - 1, h - h0)
+    i0 = np.floor(src).astype(int)
+    i1 = np.minimum(i0 + 1, h - 1)
+    t = (src - i0)[:, None, None]
+    body = a[i0] * (1 - t) + a[i1] * t
+    body[..., :3] = np.clip(body[..., :3] * gain, 0, 1)
+    out = np.zeros_like(a)
+    out[..., 3] = 1.0
+    out[..., :3] = (0.045, 0.012, 0.014)
+    out[h0:] = body
+    img.pixels.foreach_set(out.ravel())
+    img.pack()
+    me = ob.data
+    uvl = me.uv_layers.active
+    uv = np.empty(len(me.loops) * 2, dtype=np.float32)
+    uvl.data.foreach_get('uv', uv)
+    uv = uv.reshape(-1, 2)
+    uv[:, 1] = h0 / h + uv[:, 1] * (1 - h0 / h)
+    uvl.data.foreach_set('uv', uv.ravel())
+    me.update()
+    print('texture: reserved dark strip', h0, 'rows, gain', gain)
+
+
 def find_free_uv(me, cells=128, need=6):
     """Centre (u, v) of a free need x need block of the UV atlas (or None)."""
     uvl = me.uv_layers.active
@@ -809,7 +855,7 @@ def cut_mouth(ob, L, half_gap=0.0035, depth=0.05, width_frac=0.92, debug=None):
     return {'removed': len(kill), 'loops': [len(l) for l in loops], 'uv': uvc, 'rims': rims, 'n_inner': n_inner}
 
 
-def paint_inner_mouth(img, uvc, size=1024, col=(0.045, 0.012, 0.014), half=0.014):
+def paint_inner_mouth(img, uvc, size=None, col=(0.045, 0.012, 0.014), half=0.014):
     """Paint the (free) atlas block used by the inner-mouth surfaces dark."""
     if img is None or uvc is None:
         return
@@ -1258,6 +1304,8 @@ def export_glb(ob, path):
         export_image_format='JPEG', export_jpeg_quality=85, export_yup=True, export_cameras=False,
         export_lights=False, export_skins=False, export_tangents=False, export_vertex_color='NONE')
     print('exported', path, os.path.getsize(path))
+    if os.path.getsize(path) > 6_000_000:
+        print('WARNING: GLB larger than expected; check the texture JPEG size (target <= ~1.5 MB)')
 
 
 def stage_build(args):
@@ -1272,7 +1320,10 @@ def stage_build(args):
     normalise(ob, L['normalise'])
     ntri = decimate(ob, L, target=int(args.get('target', 38500)))
     finish_mesh(ob)
-    img = make_material(ob, 1024)
+    tex_size = TEXTURED_SUBJECTS.get(subj, 1024)
+    img = make_material(ob, tex_size)
+    if subj in DARK_STRIP and img is not None:
+        reserve_dark_strip(ob, img, DARK_STRIP[subj], TEX_GAIN.get(subj, 1.0))
     dbg = {}
     cut = cut_mouth(ob, L, debug=dbg)
     print('mouth', {k: v for k, v in cut.items() if k != 'rims'})

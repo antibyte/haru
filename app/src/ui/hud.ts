@@ -1,4 +1,4 @@
-import { S } from './strings';
+import { Labels, S } from './strings';
 
 export type HudAction = 'mute' | 'settings' | 'fullscreen' | 'stop';
 
@@ -22,6 +22,8 @@ export class Hud {
   private readonly segments: HTMLElement[] = [];
   private readonly muteBtn: HTMLButtonElement;
   private readonly muteLabel: HTMLElement;
+  private readonly labels = new Labels();
+  private muted = false;
   private cb: ((a: HudAction) => void) | null = null;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private lit = 0;
@@ -37,9 +39,8 @@ export class Hud {
     this.badge.prepend(el('i', 'hud-dot'));
     this.badge.append(el('span', 'hud-badge-text'));
     this.latency = el('span', 'hud-latency num', '– ms');
-    this.latency.title = S.hud.latency;
-    const meter = el('span', 'hud-meter');
-    meter.title = S.hud.mic;
+    this.labels.attr(this.latency, 'title', () => S.hud.latency);
+    const meter = this.labels.attr(el('span', 'hud-meter'), 'title', () => S.hud.mic);
     for (let i = 0; i < SEGMENTS; i++) {
       const s = el('i');
       this.segments.push(s);
@@ -48,21 +49,21 @@ export class Hud {
     left.append(this.badge, el('span', 'hud-sep'), this.latency, el('span', 'hud-sep'), meter);
 
     const right = el('div', 'hud-right glass');
-    const mk = (action: HudAction, label: string, key?: string): [HTMLButtonElement, HTMLElement] => {
+    const mk = (action: HudAction, label: () => string, key?: string): [HTMLButtonElement, HTMLElement] => {
       const b = el('button', `hud-btn hud-${action}`);
       b.type = 'button';
-      const l = el('span', 'hud-btn-label', label);
+      const l = this.labels.text(el('span', 'hud-btn-label'), label);
       b.append(l);
       if (key) b.append(el('kbd', undefined, key));
       b.addEventListener('click', () => this.cb?.(action));
       right.append(b);
       return [b, l];
     };
-    [this.muteBtn, this.muteLabel] = mk('mute', S.hud.mute, 'M');
+    [this.muteBtn, this.muteLabel] = mk('mute', () => (this.muted ? S.hud.muted : S.hud.mute), 'M');
     this.muteBtn.setAttribute('aria-pressed', 'false');
-    mk('settings', S.hud.settings, 'S');
-    mk('fullscreen', S.hud.fullscreen, 'F');
-    mk('stop', S.hud.stop);
+    mk('settings', () => S.hud.settings, 'S');
+    mk('fullscreen', () => S.hud.fullscreen, 'F');
+    mk('stop', () => S.hud.stop);
 
     this.rootEl.append(left, right);
     root.append(this.rootEl);
@@ -111,13 +112,17 @@ export class Hud {
   }
 
   setMuted(m: boolean): void {
+    this.muted = m;
     this.rootEl.classList.toggle('is-muted', m);
     this.muteBtn.setAttribute('aria-pressed', String(m));
-    this.muteLabel.textContent = m ? S.hud.unmute : S.hud.mute;
+    this.muteLabel.textContent = m ? S.hud.muted : S.hud.mute;
     if (m) this.setMicLevel(0);
   }
 
   onAction(cb: (a: HudAction) => void): void { this.cb = cb; }
+
+  /** Button labels and titles in the active language (the badge names hardware and stays). */
+  relabel(): void { this.labels.apply(); }
 
   private touch(): void {
     if (!this.shown) return;

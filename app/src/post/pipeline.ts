@@ -23,6 +23,8 @@ export interface PostUniforms {
   rms: number;
   /** god-ray origin in normalized canvas coords (y up) */
   lightPos: { x: number; y: number };
+  /** 1 = daemon ember look (dark red haze, ember grade), 0 = neutral (identical to before) */
+  ember?: number;
 }
 
 /** The face layer's inputs for the composite (null / undefined = no face this frame). */
@@ -37,6 +39,12 @@ export interface HeadPostInputs {
   size: number;
   /** per-head presence gain (normalises male / female) */
   gain?: number;
+  /** 1 = textured head: shade with `albedo` instead of porcelain (0 / undefined = the unchanged porcelain look) */
+  textured?: number;
+  /** G-buffer albedo attachment (rgb linear, a = coverage of textured geometry) */
+  albedo?: WebGLTexture | null;
+  /** visibility cap for textured heads */
+  visMax?: number;
   /** debug (?facedebug): show the face without ink gate and dissolve mask */
   debug?: boolean;
 }
@@ -216,6 +224,7 @@ export class PostFX {
     gl.uniform1f(p.uniforms['uTime'], u.timeSec);
     gl.uniform1f(p.uniforms['uRms'], Math.max(0, Math.min(1, u.rms)));
     gl.uniform1f(p.uniforms['uExposure'], 1.0);
+    gl.uniform1f(p.uniforms['uEmber'], u.ember ?? 0);
     if (head && useHead) {
       gl.uniform1i(p.uniforms['uInk'], this.ink[3].attach(4));
       gl.uniform1i(p.uniforms['uInkNear'], this.ink[1].attach(5));
@@ -223,6 +232,17 @@ export class PostFX {
       gl.uniform2f(p.uniforms['uFocus'], head.focus[0], head.focus[1]);
       gl.uniform1f(p.uniforms['uFaceSize'], head.size);
       gl.uniform1f(p.uniforms['uHeadGain'], head.gain ?? 1);
+      if (head.textured && head.albedo) {
+        gl.activeTexture(gl.TEXTURE6);
+        gl.bindTexture(gl.TEXTURE_2D, head.albedo);
+        gl.uniform1i(p.uniforms['uHeadAlb'], 6);
+        gl.uniform1f(p.uniforms['uHeadTextured'], 1);
+        gl.uniform1f(p.uniforms['uHeadVisMax'], head.visMax ?? 0.42);
+      } else {
+        gl.uniform1i(p.uniforms['uHeadAlb'], 0);
+        gl.uniform1f(p.uniforms['uHeadTextured'], 0);
+        gl.uniform1f(p.uniforms['uHeadVisMax'], 0.28);
+      }
       gl.activeTexture(gl.TEXTURE3);
       gl.bindTexture(gl.TEXTURE_2D, head.texture);
       gl.uniform1i(p.uniforms['uHead'], 3);

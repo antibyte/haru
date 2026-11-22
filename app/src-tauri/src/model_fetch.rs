@@ -8,6 +8,7 @@ use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::error::{ErrorCode, HaruError};
+use crate::messages::MsgKey;
 use crate::ipc::DownloadEvent;
 use crate::paths::partial_path;
 
@@ -44,7 +45,7 @@ fn default_client() -> Result<reqwest::Client, HaruError> {
         .user_agent("haru-app/0.1")
         .connect_timeout(Duration::from_secs(15))
         .build()
-        .map_err(|e| HaruError::new(ErrorCode::Download, "Der Download konnte nicht gestartet werden.").with_detail(e.to_string()))
+        .map_err(|e| HaruError::new(ErrorCode::Download, MsgKey::DownloadStartFailed).with_detail(e.to_string()))
 }
 
 pub async fn ensure_model(cfg: &FetchConfig, sink: DownloadSink) -> Result<PathBuf, HaruError> {
@@ -84,10 +85,6 @@ impl Throttle {
     }
 }
 
-fn gb(bytes: u64) -> String {
-    format!("{:.1}", bytes as f64 / 1e9).replace('.', ",")
-}
-
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -105,7 +102,7 @@ pub async fn ensure_model_with(
         return Ok(cfg.dest.clone());
     }
     let fail = |e: HaruError| -> HaruError {
-        sink(DownloadEvent::Error { message: e.message.clone() });
+        sink(DownloadEvent::Error(e.text()));
         e
     };
     if cfg.dest.exists() {
@@ -127,7 +124,7 @@ pub async fn ensure_model_with(
             Err(Failure::Retry(detail)) => {
                 if attempt >= retry_delays.len() {
                     return Err(fail(
-                        HaruError::new(ErrorCode::Download, "Der Download ist fehlgeschlagen. Bitte Internetverbindung prüfen.")
+                        HaruError::new(ErrorCode::Download, MsgKey::DownloadFailed)
                             .with_detail(detail),
                     ));
                 }
@@ -162,10 +159,9 @@ async fn attempt_download(
     let available = free(parent).map_err(|e| Failure::Fatal(e.into()))?;
     if available < need {
         return Err(Failure::Fatal(
-            HaruError::new(
-                ErrorCode::DiskSpace,
-                format!("Nicht genug Speicherplatz: {} GB benötigt, {} GB frei.", gb(need), gb(available)),
-            )
+            HaruError::new(ErrorCode::DiskSpace, MsgKey::DiskSpace)
+                .with_param("need", need as f64 / 1e9)
+                .with_param("free", available as f64 / 1e9)
             .with_detail(format!("need {need} bytes, available {available} bytes at {}", parent.display())),
         ));
     }
@@ -217,7 +213,7 @@ async fn attempt_download(
         tokio::fs::OpenOptions::new().create(true).write(true).truncate(true).open(&part).await?
     } else {
         return Err(Failure::Fatal(
-            HaruError::new(ErrorCode::Download, "Der Download-Server hat die Anfrage abgelehnt.")
+            HaruError::new(ErrorCode::Download, MsgKey::DownloadRejected)
                 .with_detail(format!("HTTP {status}")),
         ));
     };
@@ -282,7 +278,7 @@ async fn finish(cfg: &FetchConfig, sink: &DownloadSink, part: &Path, hasher: Sha
     if downloaded != cfg.size || !actual.eq_ignore_ascii_case(&cfg.sha256) {
         let _ = tokio::fs::remove_file(part).await;
         return Err(Failure::Fatal(
-            HaruError::new(ErrorCode::HashMismatch, "Die heruntergeladene Datei ist beschädigt. Bitte erneut versuchen.")
+            HaruError::new(ErrorCode::HashMismatch, MsgKey::DownloadCorrupt)
                 .with_detail(format!("expected sha256 {}, got {actual} ({downloaded} bytes)", cfg.sha256)),
         ));
     }
@@ -295,6 +291,7 @@ async fn finish(cfg: &FetchConfig, sink: &DownloadSink, part: &Path, hasher: Sha
 mod tests {
     use super::*;
     use std::io::{Cursor, Read};
+    use crate::messages::ParamValue;
     use std::sync::Mutex;
 
     const MIB: usize = 1024 * 1024;
@@ -500,7 +497,10 @@ mod tests {
         assert_eq!(r.unwrap_err().code, ErrorCode::HashMismatch);
         assert!(!partial_path(&f.cfg.dest).exists());
         assert!(!f.cfg.dest.exists());
-        assert!(matches!(ev.last(), Some(DownloadEvent::Error { .. })));
+        match ev.last() {
+            Some(DownloadEvent::Error(t)) => assert_eq!(t.key, MsgKey::DownloadCorrupt),
+            other => panic!("expected an error event, got {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -544,7 +544,11 @@ mod tests {
     async fn insufficient_disk_space_fails_before_request() {
         let (f, ranges) = setup(Mode::Normal);
         let (r, _) = run(&f, tiny).await;
-        assert_eq!(r.unwrap_err().code, ErrorCode::DiskSpace);
+        let e = r.unwrap_err();
+        assert_eq!(e.code, ErrorCode::DiskSpace);
+        assert_eq!(e.key, MsgKey::DiskSpace);
+        assert!(matches!(e.params.get("need"), Some(ParamValue::Number(n)) if *n > 0.0));
+        assert!(matches!(e.params.get("free"), Some(ParamValue::Number(_))));
         assert_eq!(ranges.lock().unwrap().len(), 0);
     }
 

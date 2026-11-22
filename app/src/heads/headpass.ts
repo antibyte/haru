@@ -24,10 +24,11 @@ export interface HeadMotion {
 }
 
 /**
- * Renders the head into a reduced-resolution G-buffer (RGBA16F):
+ * Renders the head into a reduced-resolution G-buffer, attachment 0 (RGBA16F):
  *   r,g = view-space normal xy (z is reconstructed, front faces only)
  *   b   = 0.35 + 0.65 * nearness, 0 where there is no geometry (doubles as the soft silhouette / coverage)
  *   a   = mouth-cavity mask, proportional to jawOpen around the mouth landmark
+ * Attachment 1 (RGBA8) holds the albedo of textured heads (rgb linear, a = 1 on geometry; all 0 for porcelain heads).
  */
 export class HeadPass {
   private readonly gl: WebGL2RenderingContext;
@@ -37,6 +38,8 @@ export class HeadPass {
   private fbo: WebGLFramebuffer | null = null;
   private depth: WebGLRenderbuffer | null = null;
   private tex: WebGLTexture | null = null;
+  private albTarget: WebGLTexture | null = null;
+  private albedo: WebGLTexture | null = null;
   private w = 0;
   private h = 0;
   private empty = true;
@@ -52,6 +55,10 @@ export class HeadPass {
   }
 
   get texture(): WebGLTexture | null { return this.tex; }
+  /** albedo attachment of the G-buffer (valid after render()) */
+  get albedoTexture(): WebGLTexture | null { return this.albTarget; }
+  /** true while a base-colour texture is set (the head is drawn textured) */
+  get textured(): boolean { return this.albedo !== null; }
   get width(): number { return this.w; }
   get height(): number { return this.h; }
   get hasHead(): boolean { return this.mesh !== null; }
@@ -68,6 +75,12 @@ export class HeadPass {
     }
   }
 
+  /** Sets (or clears with null) the base-colour texture of the head. The pass takes ownership and deletes it. */
+  setAlbedo(tex: WebGLTexture | null): void {
+    if (this.albedo && this.albedo !== tex) this.gl.deleteTexture(this.albedo);
+    this.albedo = tex;
+  }
+
   private ensureTarget(w: number, h: number): void {
     w = Math.max(2, Math.round(w));
     h = Math.max(2, Math.round(h));
@@ -82,12 +95,21 @@ export class HeadPass {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA16F, w, h);
+    this.albTarget = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, this.albTarget);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA8, w, h);
     this.depth = gl.createRenderbuffer()!;
     gl.bindRenderbuffer(gl.RENDERBUFFER, this.depth);
     gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, w, h);
     this.fbo = gl.createFramebuffer()!;
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.tex, 0);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, this.albTarget, 0);
+    gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]); // clear() and the head draw both write the two targets
     gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, this.depth);
     if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
       this.disposeTarget();
@@ -184,6 +206,12 @@ export class HeadPass {
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, mesh.morphTex);
     gl.uniform1i(p.uniforms['uMorph'], 0);
+    // albedo on unit 1 (the morph texture stands in when there is none: never sampled, but keeps the unit valid)
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.albedo ?? mesh.morphTex);
+    gl.uniform1i(p.uniforms['uTex'], 1);
+    gl.uniform1f(p.uniforms['uHasTex'], this.albedo ? 1 : 0);
+    gl.activeTexture(gl.TEXTURE0);
     gl.uniform1fv(p.uniforms['uW'], mesh.weights);
     gl.uniformMatrix4fv(p.uniforms['uMVP'], false, mvp);
     gl.uniformMatrix4fv(p.uniforms['uMV'], false, mv);
@@ -203,6 +231,8 @@ export class HeadPass {
     if (this.fbo) gl.deleteFramebuffer(this.fbo);
     if (this.depth) gl.deleteRenderbuffer(this.depth);
     if (this.tex) gl.deleteTexture(this.tex);
+    if (this.albTarget) gl.deleteTexture(this.albTarget);
+    this.albTarget = null;
     this.fbo = null;
     this.depth = null;
     this.tex = null;
@@ -212,6 +242,7 @@ export class HeadPass {
   dispose(): void {
     this.mesh?.dispose();
     this.mesh = null;
+    this.setAlbedo(null);
     this.disposeTarget();
   }
 }

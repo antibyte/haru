@@ -16,7 +16,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::backend::plan::{choose_plan, device_note, run_attempts, Attempt, DeviceNote, Overrides};
 use crate::backend::{detect, to_backend_options, Detection};
+use crate::cards::Persona;
 use crate::error::{ErrorCode, HaruError};
+use crate::messages::{MsgKey, UiText};
 use crate::ipc::{AppState, AttemptInfo, BackendOptions, BootInfo, SaveSettingsResult, StateEvent};
 use crate::model_fetch::{ensure_model, is_present, FetchConfig};
 use crate::paths::{model_path, ModelSpec};
@@ -31,20 +33,11 @@ pub type StateSink = Arc<dyn Fn(StateEvent) + Send + Sync>;
 pub type DownloadSink = crate::model_fetch::DownloadSink;
 
 const KEEP_LOGS: usize = 5;
-const CPU_WARNING: &str = "Läuft auf der CPU – das Gespräch kann zu langsam sein.";
-/// Shown (as a state notice) when a conversation continues in a fresh segment.
-pub const SEGMENT_NOTICE: &str = "Neuer Gesprächsabschnitt – Haru fängt frisch an.";
-const NO_GPU_WARNING: &str =
-    "Keine Grafikkarte mit mindestens 8 GB gefunden – Haru läuft auf der CPU und kann zu langsam sein.";
-
-fn note_text(n: DeviceNote, a: &Attempt) -> String {
+fn note_text(n: DeviceNote, a: &Attempt) -> UiText {
     match n {
-        DeviceNote::Cpu => CPU_WARNING.to_string(),
-        DeviceNote::CpuNoCapableGpu => NO_GPU_WARNING.to_string(),
-        DeviceNote::SmallGpu => format!(
-            "{} hat weniger als 8 GB Grafikspeicher – Haru braucht mindestens 8 GB, das Gespräch kann abbrechen.",
-            a.description
-        ),
+        DeviceNote::Cpu => UiText::new(MsgKey::CpuSlow),
+        DeviceNote::CpuNoCapableGpu => UiText::new(MsgKey::NoCapableGpu),
+        DeviceNote::SmallGpu => UiText::new(MsgKey::SmallGpu).with_param("device", a.description.clone()),
     }
 }
 
@@ -95,11 +88,11 @@ pub struct Core {
 }
 
 fn join_err(e: tokio::task::JoinError) -> HaruError {
-    HaruError::new(ErrorCode::Internal, "Interner Fehler.").with_detail(e.to_string())
+    HaruError::new(ErrorCode::Internal, MsgKey::Internal).with_detail(e.to_string())
 }
 
 fn busy() -> HaruError {
-    HaruError::new(ErrorCode::Busy, "Gerade nicht möglich.")
+    HaruError::new(ErrorCode::Busy, MsgKey::Busy)
 }
 
 impl Core {
@@ -148,7 +141,7 @@ impl Core {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn event(g: &Inner, warning: Option<String>, error: Option<HaruError>) -> StateEvent {
+    fn event(g: &Inner, warning: Option<UiText>, error: Option<HaruError>) -> StateEvent {
         let (backend, device) = match g.state {
             AppState::Ready | AppState::Talking => match &g.boot_info {
                 Some(b) => (Some(b.backend.clone()), Some(b.device_name.clone())),
@@ -164,14 +157,14 @@ impl Core {
     }
 
     /// Applies `a`, then emits the new state.
-    fn set(&self, g: &mut Inner, a: Action, warning: Option<String>, error: Option<HaruError>) -> Result<(), HaruError> {
+    fn set(&self, g: &mut Inner, a: Action, warning: Option<UiText>, error: Option<HaruError>) -> Result<(), HaruError> {
         g.state = transition(g.state, &a)?;
         self.emit(g, warning, error);
         Ok(())
     }
 
     /// Emits the current state again (e.g. with an error from a finished conversation).
-    fn emit(&self, g: &mut Inner, warning: Option<String>, error: Option<HaruError>) {
+    fn emit(&self, g: &mut Inner, warning: Option<UiText>, error: Option<HaruError>) {
         let ev = Self::event(g, warning, error);
         g.last = ev.clone();
         (self.on_state)(ev);
@@ -209,6 +202,13 @@ impl Core {
         };
         drop(old_worker);
         Ok(SaveSettingsResult { settings: s, reload_required: reload })
+    }
+
+    /// Replaces the in-memory settings WITHOUT validating or persisting them. Only for experiments
+    /// (`headless_talk --temperature` beyond the app's range); the app itself always goes through
+    /// `save_settings`.
+    pub fn set_settings_unchecked(&self, s: Settings) {
+        self.lock().settings = s;
     }
 
     pub fn backend_options(&self) -> Result<BackendOptions, HaruError> {
@@ -274,7 +274,7 @@ impl Core {
         let ov = Overrides::resolve(&|k| std::env::var(k).ok(), &settings);
         let plan = choose_plan(det.cuda_ok, &det.variants, &det.devices, &ov);
         if plan.is_empty() {
-            return Err(HaruError::new(ErrorCode::NoBackend, "Keine Backend-Variante gefunden.")
+            return Err(HaruError::new(ErrorCode::NoBackend, MsgKey::NoBackend)
                 .with_detail("empty backend plan"));
         }
         {
@@ -331,7 +331,7 @@ impl Core {
 
     /// Loads the first working attempt of `plan[from..]` (blocking). The caller already set `Loading`.
     /// `switched` = (previous backend, reason) adds the "backend switched" warning.
-    fn load_from(self: &Arc<Self>, from: usize, switched: Option<(String, &'static str)>) -> Result<BootInfo, HaruError> {
+    fn load_from(self: &Arc<Self>, from: usize, switched: Option<(String, MsgKey)>) -> Result<BootInfo, HaruError> {
         let (plan, voice) = {
             let g = self.lock();
             (g.plan.get(from..).unwrap_or(&[]).to_vec(), g.settings.voice_path.clone().map(PathBuf::from))
@@ -394,10 +394,11 @@ impl Core {
         g.attempt_idx = idx;
         let note = g.detection.as_ref().and_then(|d| device_note(&attempt, &d.devices, &g.overrides));
         let warning = match (&switched, note) {
-            (Some((from_backend, why)), _) => Some(format!(
-                "Backend {from_backend} {why} – gewechselt auf {}.",
-                attempt.variant.as_str()
-            )),
+            (Some((from_backend, why)), _) => Some(
+                UiText::new(*why)
+                    .with_param("from", from_backend.clone())
+                    .with_param("to", attempt.variant.as_str()),
+            ),
             (None, Some(n)) => Some(note_text(n, &attempt)),
             _ => None,
         };
@@ -468,7 +469,7 @@ impl Core {
                 Self::show_loading(&mut g, idx + 1);
                 let _ = self.set(&mut g, Action::WorkerLost { attempts_left: true }, None, None);
             } else {
-                let e = HaruError::new(ErrorCode::Worker, "Der Sprachmodell-Worker wurde unerwartet beendet.")
+                let e = HaruError::new(ErrorCode::Worker, MsgKey::WorkerExited)
                     .with_detail(tail.clone());
                 let _ = self.set(&mut g, Action::WorkerLost { attempts_left: false }, None, Some(e));
             }
@@ -479,13 +480,13 @@ impl Core {
         drop(conv);
         drop(worker);
         if attempts_left {
-            let _ = self.load_from(idx + 1, Some((from_backend, "abgestürzt")));
+            let _ = self.load_from(idx + 1, Some((from_backend, MsgKey::BackendCrashedSwitched)));
         }
     }
 
     // --------------------------------------------------------- conversation
 
-    pub fn start(self: &Arc<Self>, on_viz: VizSink) -> Result<(), HaruError> {
+    pub fn start(self: &Arc<Self>, persona: Persona, on_viz: VizSink) -> Result<(), HaruError> {
         {
             let mut g = self.lock();
             transition(g.state, &Action::Start)?;
@@ -495,7 +496,7 @@ impl Core {
             g.starting = true;
             g.early_end = None;
         }
-        let r = self.start_inner(on_viz);
+        let r = self.start_inner(persona, on_viz);
         let mut g = self.lock();
         g.starting = false;
         if r.is_err() {
@@ -504,7 +505,7 @@ impl Core {
         r
     }
 
-    fn start_inner(self: &Arc<Self>, on_viz: VizSink) -> Result<(), HaruError> {
+    fn start_inner(self: &Arc<Self>, persona: Persona, on_viz: VizSink) -> Result<(), HaruError> {
         loop {
             let (sender, settings, muted, idx, plan_len, probe, fallback) = {
                 let g = self.lock();
@@ -519,7 +520,7 @@ impl Core {
             let on_end: Arc<dyn Fn(ConversationEnd) + Send + Sync> =
                 Arc::new(move |e| this.conversation_ended(end_id.clone(), e));
             let io = self.test_io.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            let mut options = settings.dialogue_options();
+            let mut options = settings.dialogue_options(persona);
             let first = budget::measure(probe.as_ref(), fallback);
             options.max_seconds = Some(first.seconds);
             eprintln!("haru: conversation {id}: {}", first.describe());
@@ -527,7 +528,7 @@ impl Core {
             let key = id.clone();
             let next_probe = probe.clone();
             let (ww, wk) = (Arc::downgrade(self), id.clone());
-            let on_warning: Arc<dyn Fn(String) + Send + Sync> = Arc::new(move |t| {
+            let on_warning: Arc<dyn Fn(UiText) + Send + Sync> = Arc::new(move |t| {
                 if let Some(c) = ww.upgrade() {
                     c.conversation_warning(&wk, t)
                 }
@@ -544,7 +545,7 @@ impl Core {
                     }
                 }),
             };
-            match Conversation::start_with(sender, rx, &settings, options, Some(renewal), muted, on_viz.clone(), on_end, on_warning, id.clone(), &io) {
+            match Conversation::start_with(sender, rx, &settings, options, Some(renewal), muted, on_viz.clone(), on_end, on_warning, id.clone(), &io, persona.voice_style()) {
                 Ok(conv) => {
                     let early = {
                         let mut g = self.lock();
@@ -586,7 +587,7 @@ impl Core {
                     if idx + 1 >= plan_len {
                         return Err(e);
                     }
-                    self.load_from(idx + 1, Some((from_backend, "fehlgeschlagen")))?;
+                    self.load_from(idx + 1, Some((from_backend, MsgKey::BackendFailedSwitched)))?;
                 }
                 Err(e) => return Err(e),
             }
@@ -600,13 +601,13 @@ impl Core {
             return;
         }
         let mut ev = Self::event(&g, None, None);
-        ev.notice = Some(SEGMENT_NOTICE.into());
+        ev.notice = Some(UiText::new(MsgKey::SegmentRenewed));
         g.last = ev.clone();
         (self.on_state)(ev);
     }
 
     /// A running conversation reports a non-fatal problem (e.g. echo cancellation dropped out): warn the UI, no state change.
-    fn conversation_warning(&self, id: &str, text: String) {
+    fn conversation_warning(&self, id: &str, text: UiText) {
         let mut g = self.lock();
         if g.state != AppState::Talking || g.conversation.as_ref().map(|c| c.id()) != Some(id) {
             return;

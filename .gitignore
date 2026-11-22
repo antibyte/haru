@@ -6,6 +6,7 @@ app/dist/
 app/src-tauri/target/
 app/src-tauri/backends/*/
 !app/src-tauri/backends/README.md
+__pycache__/
 # downloaded reference material
 research/
 # graft index
@@ -13,6 +14,8 @@ research/
 # graft caches in subfolders
 **/graft/.cache/
 # Codex/VARCO run logs (may contain download URLs)
-assets/heads/*.err
+assets/heads/**/*.err
+assets/heads/*/run-state.json
+assets/heads/*/varco-run-prompt.effective.md
 assets/heads/flow.txt
 assets/heads/varco-readonly.txt

@@ -28,7 +28,8 @@
         "installMode": "currentUser",
         "languages": ["German", "English"],
         "displayLanguageSelector": false,
-        "compression": "lzma"
+        "compression": "lzma",
+        "installerHooks": "nsis/hooks.nsh"
       }
     },
     "icon": [

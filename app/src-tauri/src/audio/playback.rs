@@ -2,6 +2,7 @@
 
 use super::aec::{store_latency, LATENCY_UNKNOWN};
 use crate::error::{ErrorCode, HaruError};
+use crate::messages::MsgKey;
 use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -93,7 +94,7 @@ impl PlaybackHandle {
     }
 }
 
-fn err(msg: &str, detail: impl ToString) -> HaruError {
+fn err(msg: MsgKey, detail: impl ToString) -> HaruError {
     HaruError::new(ErrorCode::AudioDevice, msg).with_detail(detail.to_string())
 }
 
@@ -168,7 +169,7 @@ pub fn build_playback(
 ) -> Result<(cpal::Stream, PlaybackHandle), HaruError> {
     let supported = dev
         .default_output_config()
-        .map_err(|e| err("Das Ausgabegerät konnte nicht geöffnet werden.", e))?;
+        .map_err(|e| err(MsgKey::OutputOpenFailed, e))?;
     let rate = supported.sample_rate().0;
     let format = supported.sample_format();
     let config: cpal::StreamConfig = supported.into();
@@ -187,13 +188,13 @@ pub fn build_playback(
         SampleFormat::I16 => build_typed::<i16>(dev, &config, consumer, tap_producer, s, prebuffer),
         SampleFormat::U16 => build_typed::<u16>(dev, &config, consumer, tap_producer, s, prebuffer),
         other => {
-            return Err(err("Das Ausgabeformat wird nicht unterstützt.", format!("sample format {other:?}")));
+            return Err(err(MsgKey::OutputFormatUnsupported, format!("sample format {other:?}")));
         }
     }
-    .map_err(|e| err("Das Ausgabegerät konnte nicht geöffnet werden.", e))?;
+    .map_err(|e| err(MsgKey::OutputOpenFailed, e))?;
     stream
         .play()
-        .map_err(|e| err("Das Ausgabegerät konnte nicht gestartet werden.", e))?;
+        .map_err(|e| err(MsgKey::OutputStartFailed, e))?;
     Ok((stream, PlaybackHandle { rate, producer, shared, render_tap: tap_consumer, pushed: 0 }))
 }
 

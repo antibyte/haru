@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::backend::variants::exe_name;
 use crate::error::{ErrorCode, HaruError};
+use crate::messages::MsgKey;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Os {
@@ -47,7 +48,7 @@ impl ModelSpec {
     }
 }
 
-fn path_error(message: &str, detail: String) -> HaruError {
+fn path_error(message: MsgKey, detail: String) -> HaruError {
     HaruError::new(ErrorCode::Io, message).with_detail(detail)
 }
 
@@ -65,14 +66,14 @@ pub fn models_dir_with(os: Os, env: &dyn Fn(&str) -> Option<OsString>) -> Result
         let p = PathBuf::from(dir);
         if !is_absolute_for(os, &p) {
             return Err(path_error(
-                "SPEECH_MODEL_DIR muss ein absoluter Pfad sein.",
+                MsgKey::ModelDirRelative,
                 format!("SPEECH_MODEL_DIR={}", p.display()),
             ));
         }
         return Ok(p);
     }
     let unset = |var: &str| {
-        path_error("Der Modellordner konnte nicht bestimmt werden.", format!("{var} is not set"))
+        path_error(MsgKey::ModelDirUnknown, format!("{var} is not set"))
     };
     let root = match os {
         Os::Windows => {

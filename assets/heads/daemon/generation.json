@@ -1,0 +1,116 @@
+{
+  "version": 1,
+  "subject": "daemon",
+  "date": "2026-11-21",
+  "reference_generator": "Codex CLI image generation",
+  "reference_file": "reference.png",
+  "reference_sha256": "26331640a96d7e5b71c112e74de9a1ba2343171c8a580cd78deefb1d553b62da",
+  "prompt_file": "prompt.md",
+  "upload_file": "reference.png",
+  "varco": {
+    "flowId": "569f7763-02a8-4b5d-8119-c0712d0c6045",
+    "imageNodeId": "ec771a7e-15dc-4745-a857-2b294d7bff8e",
+    "generateNodeId": "0a396a94-4004-4119-95c3-1bdc0ac06002",
+    "taskId": "1b59c0bc-ece1-458e-92e6-a7aeb651933c",
+    "intrinsics": {
+      "count": [
+        {
+          "type": "int",
+          "value": 1
+        }
+      ],
+      "polygonCount": [
+        {
+          "type": "int",
+          "value": 100000
+        }
+      ],
+      "topology": [
+        {
+          "type": "string",
+          "value": "tri"
+        }
+      ],
+      "textureSize": [
+        {
+          "type": "int",
+          "value": 2048
+        }
+      ],
+      "generateTexture": [
+        {
+          "type": "int",
+          "value": 1
+        }
+      ],
+      "usePbrTexture": [
+        {
+          "type": "int",
+          "value": 0
+        }
+      ],
+      "tPose": [
+        {
+          "type": "int",
+          "value": 0
+        }
+      ],
+      "useAlpha": [
+        {
+          "type": "int",
+          "value": 0
+        }
+      ],
+      "license": [
+        {
+          "type": "string",
+          "value": "PRIVATE"
+        }
+      ]
+    },
+    "status": "success",
+    "durationMinutes": 1.74
+  },
+  "retained_sources": {
+    "varco-source.glb": {
+      "bytes": 11915608,
+      "sha256": "ed488c13701bdc970669e6cfe885a7a2f3bf8ca0a3973fc2ccea37044e76f028"
+    }
+  },
+  "prepared": {
+    "date": "2026-11-22",
+    "tool": "Blender 5.3.0 (headless)",
+    "script": "assets/heads/build_head.py",
+    "validator": "assets/heads/validate_heads.py",
+    "landmarks_file": "assets/heads/daemon/landmarks.json",
+    "source_blend": {
+      "path": "assets/heads/daemon/source.blend",
+      "bytes": 7591049,
+      "sha256": "abb8e8d2f0536464cc32f9ece92c0d9fa9ce6c03ba5a15fb16428471dd1cf9ea"
+    },
+    "runtime_glb": {
+      "path": "app/public/heads/daemon.glb",
+      "bytes": 4450188,
+      "sha256": "89d933dcdcf1d782752ac3d13c5adccb71cfc96ab6de582cbe9b00ca7b9a4ae8"
+    },
+    "triangles": 38598,
+    "vertices": 24808,
+    "morphTargets": [
+      "jawOpen",
+      "lipsWide",
+      "lipsRound",
+      "lipsPress",
+      "smile",
+      "browRaise",
+      "browFrown",
+      "blink"
+    ],
+    "texture": {
+      "mime": "image/jpeg",
+      "width": 2048,
+      "height": 2048,
+      "bytes": 566713
+    },
+    "validation": "ok"
+  }
+}

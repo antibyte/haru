@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::error::{ErrorCode, HaruError};
+use crate::messages::MsgKey;
 use crate::worker::protocol::{check_ready, parse_line, worker_error, ClientMsg, Ready, WorkerMsg};
 
 pub const VOICE_NAME: &str = "user";
@@ -78,7 +79,7 @@ impl WorkerSender {
     /// `backend_failure`.
     pub fn send(&self, m: &ClientMsg) -> Result<(), HaruError> {
         let broken = |d: &str| {
-            HaruError::new(ErrorCode::Worker, "Die Verbindung zum Sprachmodell-Worker ist abgebrochen.")
+            HaruError::new(ErrorCode::Worker, MsgKey::WorkerConnectionLost)
                 .with_detail(d.to_string())
                 .backend_failure()
         };
@@ -131,7 +132,7 @@ impl WorkerProcess {
             }
         }
         let child = cmd.spawn().map_err(|e| {
-            HaruError::new(ErrorCode::Worker, "Der Sprachmodell-Worker konnte nicht gestartet werden.")
+            HaruError::new(ErrorCode::Worker, MsgKey::WorkerStartFailed)
                 .with_detail(format!("{}: {e}", cfg.exe.display()))
                 .backend_failure()
         })?;
@@ -186,12 +187,12 @@ impl WorkerProcess {
                 Ok(WorkerEvent::Message(_)) | Ok(WorkerEvent::Malformed { .. }) => continue,
                 Ok(WorkerEvent::Exited { .. }) | Err(RecvTimeoutError::Disconnected) => {
                     let code = self.child.wait().ok().and_then(|s| s.code());
-                    return Err(HaruError::new(ErrorCode::Worker, "Der Sprachmodell-Worker wurde unerwartet beendet.")
+                    return Err(HaruError::new(ErrorCode::Worker, MsgKey::WorkerExited)
                         .with_detail(format!("exit code {code:?}; stderr: {}", self.stderr_tail(2000)))
                         .backend_failure());
                 }
                 Err(RecvTimeoutError::Timeout) => {
-                    return Err(HaruError::new(ErrorCode::Worker, "Der Sprachmodell-Worker wurde nicht rechtzeitig bereit.")
+                    return Err(HaruError::new(ErrorCode::Worker, MsgKey::WorkerNotReady)
                         .with_detail(format!("timeout after {timeout:?}; stderr: {}", self.stderr_tail(2000)))
                         .backend_failure());
                 }

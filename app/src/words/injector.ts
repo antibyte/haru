@@ -51,6 +51,9 @@ export class WordInjector {
   private newest: number | null = null;
   private lastNow = 0;
 
+  /** Ember (daemon) ink: warm amber core instead of white-gold. */
+  ember = false;
+
   constructor(private readonly sim: FluidSim, private readonly glyphs: GlyphRasterizer, private readonly path: WordPath) {}
 
   private geometry(bmp: GlyphBitmap, scale = 1): { w: number; h: number; visW: number; visH: number } {
@@ -158,9 +161,9 @@ export class WordInjector {
       if (ps.phase === 'ink') {
         w.color = color;
         const gain = (w.reink ? APPEND_INK_GAIN : INK_GAIN);
-        sim.maskSplatDye(bmp.texture, w.box, hot(w.color), gain * fk);
+        sim.maskSplatDye(bmp.texture, w.box, hot(w.color, 1, this.ember), gain * fk);
       } else if (ps.phase === 'hold') {
-        sim.maskSplatDye(bmp.texture, w.box, hot(w.color, 1), (id === this.newest ? ACTIVE_HOLD_GAIN : HOLD_GAIN) * fk);
+        sim.maskSplatDye(bmp.texture, w.box, hot(w.color, 1, this.ember), (id === this.newest ? ACTIVE_HOLD_GAIN : HOLD_GAIN) * fk);
         sim.addRestMask(bmp.texture, w.box);
       } else {
         w.releaseAt ??= nowMs - (ps.phase === 'done' ? RELEASE_MS : ps.releaseT * RELEASE_MS);
@@ -195,8 +198,12 @@ export class WordInjector {
   }
 }
 
-/** Pushes the ink colour toward a white-hot core; ageing then cools it through magenta to violet. */
-function hot(c: RGB, k = 1): RGB {
+/** Pushes the ink colour toward a white-hot core; ageing then cools it through magenta to violet (ember: orange-amber core, ageing to crimson). */
+export function hot(c: RGB, k = 1, ember = false): RGB {
+  if (ember) {
+    const m = 0.5 * k;
+    return [c[0] + (1.0 - c[0]) * m, c[1] + (0.5 - c[1]) * m, c[2] + (0.12 - c[2]) * m];
+  }
   const m = 0.72 * k;
   // warm white-gold core: blue stays low so the edges fall to gold/amber instead of pink
   return [c[0] + (1.0 - c[0]) * m, c[1] + (0.88 - c[1]) * m, c[2] + (0.58 - c[2]) * m];

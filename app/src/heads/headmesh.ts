@@ -17,6 +17,9 @@ export class HeadMesh {
   /** which of the 8 contract targets exist in the file */
   readonly present: boolean[];
 
+  /** TEXCOORD_0 present (attribute 2); otherwise attribute 2 is the constant (0, 0) */
+  readonly hasUv: boolean;
+
   private readonly buffers: WebGLBuffer[] = [];
 
   constructor(private readonly gl: WebGL2RenderingContext, glb: GlbHead) {
@@ -25,16 +28,18 @@ export class HeadMesh {
     this.indexType = glb.indices instanceof Uint32Array ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT;
     this.vao = gl.createVertexArray()!;
     gl.bindVertexArray(this.vao);
-    const attr = (loc: number, data: Float32Array): void => {
+    const attr = (loc: number, data: Float32Array, size = 3): void => {
       const b = gl.createBuffer()!;
       this.buffers.push(b);
       gl.bindBuffer(gl.ARRAY_BUFFER, b);
       gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
       gl.enableVertexAttribArray(loc);
-      gl.vertexAttribPointer(loc, 3, gl.FLOAT, false, 0, 0);
+      gl.vertexAttribPointer(loc, size, gl.FLOAT, false, 0, 0);
     };
     attr(0, glb.positions);
     attr(1, glb.normals);
+    this.hasUv = glb.uvs !== null;
+    if (glb.uvs) attr(2, glb.uvs, 2);
     const ib = gl.createBuffer()!;
     this.buffers.push(ib);
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ib);
@@ -70,6 +75,7 @@ export class HeadMesh {
   draw(): void {
     const gl = this.gl;
     gl.bindVertexArray(this.vao);
+    if (!this.hasUv) gl.vertexAttrib2f(2, 0, 0);
     gl.drawElements(gl.TRIANGLES, this.indexCount, this.indexType, 0);
   }
 

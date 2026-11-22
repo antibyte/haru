@@ -6,7 +6,9 @@ use tauri::ipc::Channel;
 use tauri::State;
 
 use crate::audio::devices;
+use crate::cards::Persona;
 use crate::error::{ErrorCode, HaruError};
+use crate::messages::MsgKey;
 use crate::ipc::{AudioDevices, BackendOptions, BootInfo, DownloadEvent, SaveSettingsResult, StateEvent, VizFrame};
 use crate::session::conversation::VizSink;
 use crate::session::{Core, DownloadSink};
@@ -15,7 +17,7 @@ use crate::settings::Settings;
 type CoreState<'a> = State<'a, Arc<Core>>;
 
 fn join_err(e: tauri::Error) -> HaruError {
-    HaruError::new(ErrorCode::Internal, "Interner Fehler.").with_detail(e.to_string())
+    HaruError::new(ErrorCode::Internal, MsgKey::Internal).with_detail(e.to_string())
 }
 
 #[tauri::command]
@@ -55,12 +57,12 @@ pub async fn boot(core: CoreState<'_>, on_download: Channel<DownloadEvent>) -> R
 }
 
 #[tauri::command]
-pub async fn start_conversation(core: CoreState<'_>, on_viz: Channel<VizFrame>) -> Result<(), HaruError> {
+pub async fn start_conversation(core: CoreState<'_>, persona: Persona, on_viz: Channel<VizFrame>) -> Result<(), HaruError> {
     let core = core.inner().clone();
     let sink: VizSink = Arc::new(move |f| {
         let _ = on_viz.send(f);
     });
-    tauri::async_runtime::spawn_blocking(move || core.start(sink)).await.map_err(join_err)?
+    tauri::async_runtime::spawn_blocking(move || core.start(persona, sink)).await.map_err(join_err)?
 }
 
 #[tauri::command]

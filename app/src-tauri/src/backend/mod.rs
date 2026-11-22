@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::error::{ErrorCode, HaruError};
+use crate::messages::MsgKey;
 use crate::ipc::{BackendOptions, DeviceInfo};
 use devices::Device;
 use variants::{Variant, VariantExe};
@@ -27,7 +28,7 @@ pub fn detect(dir: Option<&Path>) -> Result<Detection, HaruError> {
     let no_backend = |detail: String| {
         HaruError::new(
             ErrorCode::NoBackend,
-            "Keine Backend-Variante gefunden. Baue sie mit scripts/build-backends.ps1 oder setze HARU_BACKENDS_DIR.",
+            MsgKey::NoBackendBuild,
         )
         .with_detail(detail)
     };

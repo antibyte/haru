@@ -1,6 +1,7 @@
 //! Pure transition table of the application state (Task 1.8).
 
 use crate::error::{ErrorCode, HaruError};
+use crate::messages::MsgKey;
 use crate::ipc::AppState;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -21,7 +22,7 @@ pub enum Action {
 }
 
 fn busy() -> HaruError {
-    HaruError::new(ErrorCode::Busy, "Gerade nicht möglich.")
+    HaruError::new(ErrorCode::Busy, MsgKey::Busy)
 }
 
 pub fn transition(from: AppState, a: &Action) -> Result<AppState, HaruError> {

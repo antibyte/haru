@@ -1,24 +1,21 @@
-/** German number formatting and small label helpers for the overlays. */
+/** Number formatting in the active language and small label helpers for the overlays. Unit symbols stay as they are. */
+import { formatNumber } from './strings';
 
-function de(n: number, digits: number): string {
-  return n.toFixed(digits).replace('.', ',');
-}
-
-/** Decimal units (1 GB = 1e9 B), two decimals: "6,62 GB". */
+/** Decimal units (1 GB = 1e9 B), two decimals: de "6,62 GB", en "6.62 GB". */
 export function formatBytes(n: number): string {
   if (!Number.isFinite(n) || n < 0) return '–';
-  if (n >= 1e9) return `${de(n / 1e9, 2)} GB`;
-  if (n >= 1e6) return `${de(n / 1e6, 2)} MB`;
-  if (n >= 1e3) return `${de(n / 1e3, 2)} KB`;
+  if (n >= 1e9) return `${formatNumber(n / 1e9, 2)} GB`;
+  if (n >= 1e6) return `${formatNumber(n / 1e6, 2)} MB`;
+  if (n >= 1e3) return `${formatNumber(n / 1e3, 2)} KB`;
   return `${Math.round(n)} B`;
 }
 
-/** Transfer rate with one decimal: "42,1 MB/s". */
+/** Transfer rate with one decimal: de "42,1 MB/s", en "42.1 MB/s". */
 export function formatRate(bps: number): string {
   if (!Number.isFinite(bps) || bps < 0) return '–';
-  if (bps >= 1e9) return `${de(bps / 1e9, 1)} GB/s`;
-  if (bps >= 1e6) return `${de(bps / 1e6, 1)} MB/s`;
-  if (bps >= 1e3) return `${de(bps / 1e3, 1)} KB/s`;
+  if (bps >= 1e9) return `${formatNumber(bps / 1e9, 1)} GB/s`;
+  if (bps >= 1e6) return `${formatNumber(bps / 1e6, 1)} MB/s`;
+  if (bps >= 1e3) return `${formatNumber(bps / 1e3, 1)} KB/s`;
   return `${Math.round(bps)} B/s`;
 }
 
@@ -37,7 +34,8 @@ export function formatEta(secs: number): string {
   return m === 0 ? `${h} h` : `${h} h ${m} min`;
 }
 
-const BACKEND_NAMES: Record<string, string> = { cuda: 'CUDA', vulkan: 'Vulkan', metal: 'Metal', cpu: 'CPU' };
+/** Product names of the backends (not translated). */
+export const BACKEND_NAMES: Readonly<Record<string, string>> = { cuda: 'CUDA', vulkan: 'Vulkan', metal: 'Metal', cpu: 'CPU' };
 
 /** HUD badge text, e.g. "Vulkan · Intel Arc B580". */
 export function badgeLabel(backend: string, device: string): string {

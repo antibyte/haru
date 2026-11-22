@@ -2,6 +2,7 @@
 
 use super::aec::{store_latency, LATENCY_UNKNOWN};
 use crate::error::{ErrorCode, HaruError};
+use crate::messages::MsgKey;
 use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -17,7 +18,7 @@ pub struct CaptureHandle {
     pub input_latency_us: Arc<AtomicU32>,
 }
 
-fn err(msg: &str, detail: impl ToString) -> HaruError {
+fn err(msg: MsgKey, detail: impl ToString) -> HaruError {
     HaruError::new(ErrorCode::AudioDevice, msg).with_detail(detail.to_string())
 }
 
@@ -61,7 +62,7 @@ where
 pub fn build_capture(dev: &cpal::Device) -> Result<(cpal::Stream, CaptureHandle), HaruError> {
     let supported = dev
         .default_input_config()
-        .map_err(|e| err("Das Mikrofon konnte nicht geöffnet werden.", e))?;
+        .map_err(|e| err(MsgKey::MicOpenFailed, e))?;
     let rate = supported.sample_rate().0;
     let format = supported.sample_format();
     let config: cpal::StreamConfig = supported.into();
@@ -82,12 +83,12 @@ pub fn build_capture(dev: &cpal::Device) -> Result<(cpal::Stream, CaptureHandle)
         SampleFormat::F32 => build_typed::<f32>(dev, &config, producer, o, failed.clone(), latency.clone()),
         SampleFormat::F64 => build_typed::<f64>(dev, &config, producer, o, failed.clone(), latency.clone()),
         other => {
-            return Err(err("Das Mikrofon-Format wird nicht unterstützt.", format!("sample format {other:?}")));
+            return Err(err(MsgKey::MicFormatUnsupported, format!("sample format {other:?}")));
         }
     }
-    .map_err(|e| err("Das Mikrofon konnte nicht geöffnet werden.", e))?;
+    .map_err(|e| err(MsgKey::MicOpenFailed, e))?;
     stream
         .play()
-        .map_err(|e| err("Das Mikrofon konnte nicht gestartet werden.", e))?;
+        .map_err(|e| err(MsgKey::MicStartFailed, e))?;
     Ok((stream, CaptureHandle { rate, consumer, overruns, failed, input_latency_us: latency }))
 }

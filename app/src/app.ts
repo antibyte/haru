@@ -1,16 +1,16 @@
 import { Renderer } from './render/renderer';
-import type { BootInfo, HaruClient, HaruError, Settings, StateEvent } from './ipc/types';
+import type { BootInfo, Persona, HaruClient, HaruError, Settings, StateEvent, UiText } from './ipc/types';
 import { toHaruError } from './ipc/tauri-client';
 import { BootScreen } from './ui/boot';
 import { HeadphoneHint } from './ui/hint';
-import { StartButton } from './ui/start';
+import { PersonaChooser } from './ui/chooser';
 import { Hud, type HudAction } from './ui/hud';
 import { SettingsPanel } from './ui/settings';
 import { Subtitles } from './ui/subtitles';
 import { ErrorToast } from './ui/toast';
 import { bindKeys } from './ui/keys';
 import { badgeLabel } from './ui/format';
-import { S } from './ui/strings';
+import { getLanguage, resolveLanguage, sameText, setLanguage } from './ui/strings';
 
 export interface AppHooks { autostart: boolean; log: (msg: string) => void }
 
@@ -21,7 +21,7 @@ export class App {
   private readonly renderer: Renderer;
   private readonly boot: BootScreen;
   private readonly hint: HeadphoneHint;
-  private readonly startBtn: StartButton;
+  private readonly chooser: PersonaChooser;
   private readonly hud: Hud;
   private readonly settingsPanel: SettingsPanel;
   private readonly subtitles: Subtitles;
@@ -34,13 +34,13 @@ export class App {
   private noAutostart = false;
   private errorShown = false;
   private muted = false;
-  private lastWarning: string | null = null;
+  private lastWarning: UiText | null = null;
 
   constructor(private readonly client: HaruClient, canvas: HTMLCanvasElement, root: HTMLElement, private readonly hooks?: AppHooks) {
     this.renderer = new Renderer(canvas);
     this.boot = new BootScreen(root);
     this.hint = new HeadphoneHint(root);
-    this.startBtn = new StartButton(root);
+    this.chooser = new PersonaChooser(root);
     this.hud = new Hud(root);
     this.settingsPanel = new SettingsPanel(root);
     this.subtitles = new Subtitles(root);
@@ -76,9 +76,10 @@ export class App {
   // ---------------------------------------------------------------- state
 
   private onState(e: StateEvent): void {
-    this.hooks?.log(`state ${e.state}${e.error ? ' error=' + e.error.code : ''}${e.warning ? ' warning=' + e.warning : ''}${e.notice ? ' notice=' + e.notice : ''}`);
+    this.hooks?.log(`state ${e.state}${e.error ? ' error=' + e.error.code : ''}${e.warning ? ' warning=' + e.warning.key : ''}${e.notice ? ' notice=' + e.notice.key : ''}`);
     if (e.notice && e.state === 'talking' && this.phase === 'talking') this.toast.showInfo(e.notice);
-    if (e.warning && e.warning !== this.lastWarning) {
+    // compare key + params: the same warning arrives with every state event and must not pop up again
+    if (e.warning && !sameText(e.warning, this.lastWarning)) {
       this.lastWarning = e.warning;
       this.toast.showWarning(e.warning);
     }
@@ -88,7 +89,7 @@ export class App {
       case 'loading':
         if (this.phase === 'starting' || this.phase === 'talking') return; // backend fallback during start
         if (!this.booting) void this.runBoot();
-        this.boot.setStatus(e.state === 'downloading' ? S.boot.downloading : e.state === 'loading' ? S.boot.loading : S.boot.detecting);
+        this.boot.setStatus(e.state === 'downloading' ? 'downloading' : e.state === 'loading' ? 'loading' : 'detecting');
         break;
       case 'error':
         if (e.error) this.showError(e.error);
@@ -123,8 +124,8 @@ export class App {
     this.errorShown = false;
     this.phase = 'boot';
     this.toast.hide();
-    this.startBtn.hide();
-    this.boot.setStatus(S.boot.detecting);
+    this.chooser.hide();
+    this.boot.setStatus('detecting');
     this.boot.show();
     this.renderer.setMode('boot');
     try {
@@ -143,7 +144,7 @@ export class App {
     this.booting = false;
     this.boot.hide();
     this.hud.setBadge(this.info ? badgeLabel(this.info.backend, this.info.deviceName) : '');
-    if (this.info?.warning && this.info.warning !== this.lastWarning) {
+    if (this.info?.warning && !sameText(this.info.warning, this.lastWarning)) {
       this.lastWarning = this.info.warning;
       this.toast.showWarning(this.info.warning);
     }
@@ -165,43 +166,54 @@ export class App {
     if (this.hooks?.autostart && !this.noAutostart && this.phase === 'idle') {
       this.hooks.autostart = false; // once
       this.hooks.log('autostart: pressing start');
-      void this.startConversation('autostart');
+      void this.startConversation('autostart', this.autostartPersona());
     }
   }
 
   private showStart(): void {
     this.phase = 'idle';
     this.renderer.setMode('idle');
-    this.startBtn.show((ev) => {
-      this.hooks?.log(`start click isTrusted=${ev.isTrusted} detail=${ev.detail}`);
-      void this.startConversation('click');
+    this.renderer.setPersona(null);
+    this.chooser.show((p, ev) => {
+      this.hooks?.log(`start click persona=${p} isTrusted=${ev.isTrusted} detail=${ev.detail}`);
+      void this.startConversation('click', p);
     });
+  }
+
+  /** `?persona=daemon` picks the devil for the autostart, only while test hooks are active. */
+  private autostartPersona(): Persona {
+    if (!this.hooks) return 'angel';
+    try {
+      return new URLSearchParams(window.location.search).get('persona') === 'daemon' ? 'daemon' : 'angel';
+    } catch { return 'angel'; }
   }
 
   // ---------------------------------------------------------------- conversation
 
-  private async startConversation(source: 'click' | 'autostart'): Promise<void> {
+  private async startConversation(source: 'click' | 'autostart', persona: Persona = 'angel'): Promise<void> {
     if (this.phase !== 'idle') return;
-    this.hooks?.log(`startConversation source=${source}`);
+    this.hooks?.log(`startConversation source=${source} persona=${persona}`);
     this.phase = 'starting';
-    this.startBtn.setBusy(true);
+    this.chooser.setBusy(persona);
+    this.renderer.setPersona(persona);
     this.toast.hide();
     try {
-      await this.client.startConversation((f) => {
+      await this.client.startConversation(persona, (f) => {
         this.renderer.pushViz(f);
         this.hud.setLatency(f.latencyMs);
         this.hud.setMicLevel(f.mic.rms);
       });
     } catch (e) {
       this.phase = 'idle';
-      this.startBtn.setBusy(false);
+      this.chooser.setBusy(false);
+      this.renderer.setPersona(null);
       this.hooks?.log(`start failed: ${JSON.stringify(toHaruError(e))}`);
       this.toast.show(toHaruError(e));
       return;
     }
     if (this.phase !== 'starting') return; // ended while starting
     this.phase = 'talking';
-    this.startBtn.hide();
+    this.chooser.hide();
     this.hud.show();
     this.hud.setMuted(this.muted);
     this.renderer.setMode('talking');
@@ -290,5 +302,19 @@ export class App {
     this.renderer.setQualityMode(s.quality);
     this.subtitles.setEnabled(s.subtitles);
     this.renderer.setFace(s.showFace ?? true, s.gender);
+    if (resolveLanguage(s.language) !== getLanguage()) {
+      setLanguage(s.language);
+      this.relabel();
+    }
+  }
+
+  /** Labels every overlay again after a language switch (subtitles show spoken words and stay). */
+  private relabel(): void {
+    this.boot.relabel();
+    this.hint.relabel();
+    this.chooser.relabel();
+    this.hud.relabel();
+    this.settingsPanel.relabel();
+    this.toast.relabel();
   }
 }

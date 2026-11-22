@@ -3,25 +3,31 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::cards;
+use crate::cards::{self, Persona};
 use crate::error::{ErrorCode, HaruError};
+use crate::messages::MsgKey;
 use crate::worker::protocol::DialogueOptions;
 
 pub const LANGUAGES: [&str; 9] = ["de", "en", "es", "fr", "ja", "ko", "pt", "ru", "zh"];
 
-/// The name setting of a fresh install; it means "use the name of the official card".
+/// The name setting of a fresh install; it means "use the name of the card".
 pub const DEFAULT_NAME: &str = "Haru";
+
+/// Sampling temperature range of the slider. The worker divides ALL text logits by it, including the
+/// silence (PAD/EOP) decision: near 0 Haru never speaks, far above 1 she talks nonstop.
+pub const TEMPERATURE_MIN: f64 = 0.3;
+pub const TEMPERATURE_MAX: f64 = 1.0;
+pub const TEMPERATURE_DEFAULT: f64 = 0.6;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
     pub language: String,            // "de"; one of de,en,es,fr,ja,ko,pt,ru,zh
     pub name: String,                // "Haru"
-    pub persona: String,             // ""
     pub gender: Option<String>,      // None | "female" | "male"
     pub backchannel: Option<String>, // None | "low" | "mid" | "high"
     pub speak_first: bool,           // true
-    pub temperature: f64,            // 0.7
+    pub temperature: f64,            // 0.6 (TEMPERATURE_DEFAULT)
     pub top_k: u32,                  // 25
     pub voice_path: Option<String>,  // None
     pub input_device: Option<String>,
@@ -41,11 +47,10 @@ impl Default for Settings {
         Settings {
             language: "de".into(),
             name: DEFAULT_NAME.into(),
-            persona: String::new(),
             gender: None,
             backchannel: None,
             speak_first: true,
-            temperature: 0.7,
+            temperature: TEMPERATURE_DEFAULT,
             top_k: 25,
             voice_path: None,
             input_device: None,
@@ -68,23 +73,36 @@ fn sibling(path: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(s)
 }
 
-/// Missing file gives defaults; a corrupt file is renamed to `<path>.bad` and defaults are returned.
+/// Defaults with the language detected from the operating system (first start, unreadable file).
+fn detected_defaults(os_locales: impl FnOnce() -> Vec<String>) -> Settings {
+    let language = crate::locale::pick_language(os_locales());
+    eprintln!("settings: using detected language {language}");
+    Settings { language: language.to_string(), ..Default::default() }
+}
+
+/// Missing file gives defaults in the OS language; a corrupt file is renamed to `<path>.bad` and defaults
+/// (again in the OS language) are returned.
 pub fn load(path: &Path) -> Settings {
+    load_with(path, crate::locale::os_locales)
+}
+
+/// `load` with an injectable source of OS locales (only asked when a language has to be detected).
+pub fn load_with(path: &Path, os_locales: impl FnOnce() -> Vec<String>) -> Settings {
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Settings::default(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return detected_defaults(os_locales),
         Err(_) => {
             let _ = std::fs::rename(path, sibling(path, ".bad"));
-            return Settings::default();
+            return detected_defaults(os_locales);
         }
     };
     match serde_json::from_str::<Settings>(&text) {
-        Ok(s) => s,
+        Ok(s) => s.sanitized(os_locales),
         Err(_) => {
             let bad = sibling(path, ".bad");
             let _ = std::fs::remove_file(&bad);
             let _ = std::fs::rename(path, &bad);
-            Settings::default()
+            detected_defaults(os_locales)
         }
     }
 }
@@ -98,7 +116,7 @@ pub fn save(path: &Path, s: &Settings) -> Result<(), HaruError> {
         }
     }
     let json = serde_json::to_string_pretty(s)
-        .map_err(|e| HaruError::new(ErrorCode::Settings, "Einstellungen konnten nicht gespeichert werden.").with_detail(e.to_string()))?;
+        .map_err(|e| HaruError::new(ErrorCode::Settings, MsgKey::SettingsSaveFailed).with_detail(e.to_string()))?;
     let tmp = sibling(path, ".tmp");
     std::fs::write(&tmp, json)?;
     if let Err(e) = std::fs::rename(&tmp, path) {
@@ -108,55 +126,72 @@ pub fn save(path: &Path, s: &Settings) -> Result<(), HaruError> {
     Ok(())
 }
 
-fn invalid(message: &str, detail: String) -> HaruError {
+fn invalid(message: MsgKey, detail: String) -> HaruError {
     HaruError::new(ErrorCode::Settings, message).with_detail(detail)
 }
 
 impl Settings {
+    /// Pulls values of an old or hand-edited file back into their valid range (never fails loading).
+    /// The corrected value is persisted by the next save.
+    /// An unsupported language tag is normalized (`DE-at` -> `de`) or replaced by the OS language.
+    pub fn sanitized(mut self, os_locales: impl FnOnce() -> Vec<String>) -> Settings {
+        if !LANGUAGES.contains(&self.language.as_str()) {
+            self.language = crate::locale::match_language(&self.language)
+                .unwrap_or_else(|| crate::locale::pick_language(os_locales()))
+                .to_string();
+        }
+        self.temperature = if self.temperature.is_finite() {
+            self.temperature.clamp(TEMPERATURE_MIN, TEMPERATURE_MAX)
+        } else {
+            TEMPERATURE_DEFAULT
+        };
+        self
+    }
+
     pub fn validate(&self) -> Result<(), HaruError> {
         if !LANGUAGES.contains(&self.language.as_str()) {
-            return Err(invalid("Diese Sprache wird nicht unterstützt.", format!("language={}", self.language)));
+            return Err(invalid(MsgKey::LanguageUnsupported, format!("language={}", self.language)));
         }
-        if !(0.0..=2.0).contains(&self.temperature) {
-            return Err(invalid("Die Temperatur muss zwischen 0 und 2 liegen.", format!("temperature={}", self.temperature)));
+        if !(TEMPERATURE_MIN..=TEMPERATURE_MAX).contains(&self.temperature) {
+            return Err(invalid(MsgKey::TemperatureRange, format!("temperature={}", self.temperature)));
         }
         if self.top_k > 500 {
-            return Err(invalid("Top-K muss zwischen 0 und 500 liegen.", format!("top_k={}", self.top_k)));
+            return Err(invalid(MsgKey::TopKRange, format!("top_k={}", self.top_k)));
         }
         if !(0.5..=10.0).contains(&self.lag_limit_secs) {
             return Err(invalid(
-                "Die Verzögerungsgrenze muss zwischen 0,5 und 10 Sekunden liegen.",
+                MsgKey::LagLimitRange,
                 format!("lag_limit_secs={}", self.lag_limit_secs),
             ));
         }
         if !["auto", "cuda", "vulkan", "metal", "cpu"].contains(&self.backend.as_str()) {
-            return Err(invalid("Unbekanntes Backend.", format!("backend={}", self.backend)));
+            return Err(invalid(MsgKey::BackendUnknown, format!("backend={}", self.backend)));
         }
         if !["auto", "low", "medium", "high", "ultra"].contains(&self.quality.as_str()) {
-            return Err(invalid("Unbekannte Qualitätsstufe.", format!("quality={}", self.quality)));
+            return Err(invalid(MsgKey::QualityUnknown, format!("quality={}", self.quality)));
         }
         if let Some(g) = &self.gender {
             if !["female", "male"].contains(&g.as_str()) {
-                return Err(invalid("Unbekanntes Geschlecht.", format!("gender={g}")));
+                return Err(invalid(MsgKey::GenderUnknown, format!("gender={g}")));
             }
         }
         if let Some(b) = &self.backchannel {
             if !["low", "mid", "high"].contains(&b.as_str()) {
-                return Err(invalid("Unbekannte Rückmeldungsstärke.", format!("backchannel={b}")));
+                return Err(invalid(MsgKey::BackchannelUnknown, format!("backchannel={b}")));
             }
         }
         if let Some(v) = &self.voice_path {
             if !Path::new(v).is_file() {
-                return Err(invalid("Die Stimmdatei wurde nicht gefunden.", format!("voice_path={v}")));
+                return Err(invalid(MsgKey::VoiceFileMissing, format!("voice_path={v}")));
             }
         }
         Ok(())
     }
 
-    /// Options of a dialogue request: the official card of the language, overridden by the own
-    /// name / persona / backchannel. `max_seconds` is set by the session (it depends on free memory).
-    pub fn dialogue_options(&self) -> DialogueOptions {
-        let card = cards::official(&self.language);
+    /// Options of a dialogue request: the card of `persona` in the language, overridden by the own
+    /// name / backchannel. `max_seconds` is set by the session (it depends on free memory).
+    pub fn dialogue_options(&self, persona: Persona) -> DialogueOptions {
+        let card = cards::card(persona, &self.language);
         let own = self.name.trim();
         // The card name wins while the own name is empty or the untouched default; otherwise the own
         // name replaces the card name inside the card texts.
@@ -165,13 +200,14 @@ impl Settings {
         DialogueOptions {
             language: Some(self.language.clone()),
             name: Some(name.clone()),
-            persona: Some(if self.persona.trim().is_empty() { fit(&card.persona) } else { self.persona.clone() }),
-            gender: self.gender.clone(),
+            persona: Some(fit(&card.persona)),
+            // The daemon always speaks with the male voice; the angel follows the setting.
+            gender: if persona == Persona::Daemon { Some("male".to_string()) } else { self.gender.clone() },
             backchannel: Some(self.backchannel.clone().unwrap_or_else(|| card.backchannel.clone())),
             relationship: Some(fit(&card.relationship)),
             situation: Some(fit(&card.situation)),
             speak_first: self.speak_first.then_some(true),
-            temperature: ((self.temperature - 0.7).abs() > 1e-9).then_some(self.temperature),
+            temperature: Some(self.temperature),
             top_k: (self.top_k != 25).then_some(self.top_k),
             voice: self.voice_path.as_ref().map(|_| "user".to_string()),
             ..Default::default()
@@ -189,7 +225,7 @@ mod tests {
     use serde_json::json;
 
     fn opts_json(s: &Settings) -> serde_json::Value {
-        serde_json::to_value(s.dialogue_options()).unwrap()
+        serde_json::to_value(s.dialogue_options(Persona::Angel)).unwrap()
     }
 
     #[test]
@@ -197,10 +233,9 @@ mod tests {
         let s = Settings::default();
         assert_eq!(s.language, "de");
         assert_eq!(s.name, "Haru");
-        assert_eq!(s.persona, "");
         assert!(s.gender.is_none() && s.backchannel.is_none() && s.voice_path.is_none());
         assert!(s.speak_first);
-        assert_eq!(s.temperature, 0.7);
+        assert_eq!(s.temperature, 0.6);
         assert_eq!(s.top_k, 25);
         assert_eq!((s.backend.as_str(), s.device.as_str(), s.quality.as_str()), ("auto", "auto", "auto"));
         assert!(!s.subtitles);
@@ -214,7 +249,59 @@ mod tests {
     #[test]
     fn missing_file_gives_defaults() {
         let d = tempfile::tempdir().unwrap();
-        assert_eq!(load(&d.path().join("settings.json")), Settings::default());
+        assert_eq!(load_with(&d.path().join("settings.json"), || vec!["de-DE".into()]), Settings::default());
+    }
+
+    fn no_os_locales() -> Vec<String> {
+        panic!("OS locales must not be queried")
+    }
+
+    #[test]
+    fn missing_file_detects_os_language() {
+        let d = tempfile::tempdir().unwrap();
+        let s = load_with(&d.path().join("settings.json"), || vec!["ja-JP".into()]);
+        assert_eq!(s, Settings { language: "ja".into(), ..Default::default() });
+    }
+
+    #[test]
+    fn missing_file_with_unsupported_locale_is_english() {
+        let d = tempfile::tempdir().unwrap();
+        let s = load_with(&d.path().join("settings.json"), || vec!["nl-NL".into()]);
+        assert_eq!(s.language, "en");
+    }
+
+    #[test]
+    fn stored_language_wins_over_os_locale() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("settings.json");
+        std::fs::write(&p, r#"{"language":"fr"}"#).unwrap();
+        assert_eq!(load_with(&p, no_os_locales).language, "fr");
+    }
+
+    #[test]
+    fn hand_edited_language_tag_is_normalized() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("settings.json");
+        std::fs::write(&p, r#"{"language":"DE-at"}"#).unwrap();
+        assert_eq!(load_with(&p, no_os_locales).language, "de");
+    }
+
+    #[test]
+    fn unsupported_stored_language_is_replaced_by_detected() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("settings.json");
+        std::fs::write(&p, r#"{"language":"xx"}"#).unwrap();
+        assert_eq!(load_with(&p, || vec!["es-MX".into()]).language, "es");
+        assert!(!d.path().join("settings.json.bad").exists());
+    }
+
+    #[test]
+    fn corrupt_file_uses_detected_language() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("settings.json");
+        std::fs::write(&p, "{ not json").unwrap();
+        assert_eq!(load_with(&p, || vec!["ko-KR".into()]).language, "ko");
+        assert!(d.path().join("settings.json.bad").exists());
     }
 
     #[test]
@@ -233,9 +320,8 @@ mod tests {
         let p = d.path().join("settings.json");
         let s = Settings {
             language: "fr".into(),
-            persona: "freundlich".into(),
             gender: Some("female".into()),
-            temperature: 1.1,
+            temperature: 0.9,
             top_k: 40,
             subtitles: true,
             ..Default::default()
@@ -258,7 +344,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("settings.json");
         std::fs::write(&p, "{ not json").unwrap();
-        assert_eq!(load(&p), Settings::default());
+        assert_eq!(load_with(&p, || vec!["de-DE".into()]), Settings::default());
         assert!(!p.exists());
         assert_eq!(std::fs::read_to_string(d.path().join("settings.json.bad")).unwrap(), "{ not json");
     }
@@ -270,8 +356,39 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_temperature_2_5() {
-        assert!(Settings { temperature: 2.5, ..Default::default() }.validate().is_err());
+    fn validate_temperature_range_is_0_3_to_1_0_inclusive() {
+        for bad in [0.29, 1.01, 0.0, 1.5, 2.5, f64::NAN] {
+            let e = Settings { temperature: bad, ..Default::default() }.validate().unwrap_err();
+            assert_eq!(e.message, MsgKey::TemperatureRange.german());
+            assert_eq!(e.key, MsgKey::TemperatureRange);
+        }
+        for ok in [0.3, 0.6, 1.0] {
+            assert!(Settings { temperature: ok, ..Default::default() }.validate().is_ok());
+        }
+    }
+
+    #[test]
+    fn loading_clamps_out_of_range_temperature() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("settings.json");
+        for (stored, want) in [("1.5", 1.0), ("0", 0.3), ("-3", 0.3), ("0.45", 0.45)] {
+            std::fs::write(&p, format!(r#"{{"temperature":{stored}}}"#)).unwrap();
+            assert_eq!(load(&p).temperature, want, "stored {stored}");
+            assert!(!d.path().join("settings.json.bad").exists());
+        }
+    }
+
+    #[test]
+    fn sanitized_replaces_non_finite_temperature_with_default() {
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let s = Settings { temperature: bad, ..Default::default() }.sanitized(no_os_locales);
+            assert_eq!(s.temperature, 0.6);
+        }
+    }
+
+    #[test]
+    fn dialogue_options_always_send_temperature() {
+        assert_eq!(opts_json(&Settings::default())["temperature"], json!(0.6));
     }
 
     #[test]
@@ -298,8 +415,8 @@ mod tests {
 
     #[test]
     fn dialogue_options_defaults() {
-        let o = Settings::default().dialogue_options();
-        let card = cards::official("de");
+        let o = Settings::default().dialogue_options(Persona::Angel);
+        let card = cards::card(Persona::Angel, "de");
         assert_eq!(o.language.as_deref(), Some("de"));
         assert_eq!(o.name.as_deref(), Some("Haru"));
         assert_eq!(o.persona.as_deref(), Some(card.persona.as_str()));
@@ -320,14 +437,12 @@ mod tests {
     }
 
     #[test]
-    fn dialogue_options_include_card_fields() {
+    fn dialogue_options_include_setting_fields() {
         let v = opts_json(&Settings {
-            persona: "ruhig".into(),
             gender: Some("male".into()),
             backchannel: Some("high".into()),
             ..Default::default()
         });
-        assert_eq!(v["persona"], json!("ruhig"));
         assert_eq!(v["gender"], json!("male"));
         assert_eq!(v["backchannel"], json!("high"));
     }
@@ -340,8 +455,8 @@ mod tests {
 
     #[test]
     fn dialogue_options_custom_name_replaces_card_name_in_texts() {
-        let card = cards::official("de");
-        let o = Settings { name: "Mika".into(), ..Default::default() }.dialogue_options();
+        let card = cards::card(Persona::Angel, "de");
+        let o = Settings { name: "Mika".into(), ..Default::default() }.dialogue_options(Persona::Angel);
         assert_eq!(o.name.as_deref(), Some("Mika"));
         assert_eq!(o.persona.as_deref(), Some(card.persona.replace("Haru", "Mika").as_str()));
         assert_eq!(o.relationship.as_deref(), Some(card.relationship.replace("Haru", "Mika").as_str()));
@@ -351,14 +466,14 @@ mod tests {
 
     #[test]
     fn dialogue_options_japanese_default_name_becomes_haru_katakana() {
-        let o = Settings { language: "ja".into(), ..Default::default() }.dialogue_options();
+        let o = Settings { language: "ja".into(), ..Default::default() }.dialogue_options(Persona::Angel);
         assert_eq!(o.name.as_deref(), Some("ハル"));
-        assert_eq!(o.persona.as_deref(), Some(cards::official("ja").persona.as_str()));
+        assert_eq!(o.persona.as_deref(), Some(cards::card(Persona::Angel, "ja").persona.as_str()));
     }
 
     #[test]
     fn dialogue_options_japanese_custom_name_wins() {
-        let o = Settings { language: "ja".into(), name: "Mika".into(), ..Default::default() }.dialogue_options();
+        let o = Settings { language: "ja".into(), name: "Mika".into(), ..Default::default() }.dialogue_options(Persona::Angel);
         assert_eq!(o.name.as_deref(), Some("Mika"));
         assert!(!o.situation.unwrap().contains("ハル"));
     }
@@ -395,7 +510,6 @@ mod tests {
         assert!(a.needs_reload(&Settings { backend: "cpu".into(), ..a.clone() }));
         assert!(a.needs_reload(&Settings { device: "Vulkan0".into(), ..a.clone() }));
         assert!(a.needs_reload(&Settings { voice_path: Some("v.wav".into()), ..a.clone() }));
-        assert!(!a.needs_reload(&Settings { persona: "x".into(), ..a.clone() }));
         assert!(!a.needs_reload(&Settings { echo_cancellation: false, ..a.clone() }));
     }
 
@@ -419,5 +533,43 @@ mod tests {
         save(&p, &s).unwrap();
         assert!(std::fs::read_to_string(&p).unwrap().contains("\"echoCancellation\": false"));
         assert!(!load(&p).echo_cancellation);
+    }
+
+    #[test]
+    fn daemon_options_use_the_daemon_card() {
+        let s = Settings::default();
+        let o = s.dialogue_options(Persona::Daemon);
+        assert_eq!(o.persona.as_deref(), Some(cards::card(Persona::Daemon, "de").persona.as_str()));
+        assert_eq!(o.relationship.as_deref(), Some(cards::card(Persona::Daemon, "de").relationship.as_str()));
+        assert_eq!(o.backchannel.as_deref(), Some("low"));
+    }
+
+    #[test]
+    fn daemon_always_gets_the_male_voice_angel_follows_the_setting() {
+        for g in [None, Some("female".to_string()), Some("male".to_string())] {
+            let s = Settings { gender: g.clone(), ..Settings::default() };
+            assert_eq!(s.dialogue_options(Persona::Daemon).gender.as_deref(), Some("male"));
+            assert_eq!(s.dialogue_options(Persona::Angel).gender, g);
+        }
+    }
+
+    #[test]
+    fn own_name_replaces_haru_in_the_daemon_card() {
+        let s = Settings { name: "Mara".into(), ..Settings::default() };
+        let o = s.dialogue_options(Persona::Daemon);
+        assert_eq!(o.name.as_deref(), Some("Mara"));
+        assert!(o.persona.as_deref().unwrap().contains("Mara") && !o.persona.as_deref().unwrap().contains("Haru"));
+    }
+
+    #[test]
+    fn old_settings_with_persona_still_load() {
+        let s: Settings = serde_json::from_value(json!({ "language": "de", "persona": "alt" })).unwrap();
+        assert_eq!(s.language, "de");
+    }
+
+    #[test]
+    fn backchannel_setting_overrides_the_persona_card() {
+        let s = Settings { backchannel: Some("high".into()), ..Settings::default() };
+        assert_eq!(s.dialogue_options(Persona::Daemon).backchannel.as_deref(), Some("high"));
     }
 }

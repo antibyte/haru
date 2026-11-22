@@ -6,6 +6,7 @@ use super::capture::{build_capture, CaptureHandle};
 use super::devices::{input_device, output_device};
 use super::playback::{build_playback, PlaybackHandle};
 use crate::error::{ErrorCode, HaruError};
+use crate::messages::MsgKey;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread::{self, JoinHandle};
@@ -53,7 +54,7 @@ impl AudioEngine {
                     }
                 }
             })
-            .map_err(|e| HaruError::new(ErrorCode::AudioDevice, "Audio konnte nicht gestartet werden.").with_detail(e.to_string()))?;
+            .map_err(|e| HaruError::new(ErrorCode::AudioDevice, MsgKey::AudioStartFailed).with_detail(e.to_string()))?;
         match rx.recv() {
             Ok(Ok((cap, play))) => Ok((AudioEngine { thread: Some(thread), stop }, cap, play)),
             Ok(Err(e)) => {
@@ -62,7 +63,7 @@ impl AudioEngine {
             }
             Err(_) => {
                 let _ = thread.join();
-                Err(HaruError::new(ErrorCode::AudioDevice, "Audio konnte nicht gestartet werden.")
+                Err(HaruError::new(ErrorCode::AudioDevice, MsgKey::AudioStartFailed)
                     .with_detail("audio thread ended unexpectedly"))
             }
         }

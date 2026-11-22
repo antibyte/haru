@@ -13,7 +13,7 @@ Haru läuft lokal: Die App startet den `speech worker` aus [speech.cpp](https://
 - **Flüssiges Licht:** Harus Worte werden als Tinte in eine Stable-Fluids-Simulation gespritzt, mit Bloom, God Rays, Flüssigglas-Shading und ACES-Tonemapping.
 - **Audio-Kopplung:** Harus Lautstärke steuert Wirbel und Splats, der spektrale Schwerpunkt den Farbton. Dein Mikrofon malt kühle Splats vom unteren Rand („Haru hört zu").
 - **Automatische Backend-Wahl** (CUDA, Vulkan, CPU) mit Anzeige im HUD, Resumable Modell-Download, adaptive Render-Qualität, optionale Untertitel.
-- **Sprache:** Die Oberfläche ist auf Deutsch. Die Gesprächssprache wählst du in den Einstellungen (de, en, es, fr, ja, ko, pt, ru, zh).
+- **Sprache:** Eine Einstellung steuert Oberfläche und Gespräch. Beim ersten Start übernimmt Haru die Sprache des Betriebssystems, unterstützt werden Deutsch, English, Español, Français, 日本語, 한국어, Português, Русский und 中文 (vereinfacht). Details unter [Sprache](#sprache).
 
 Screenshots:
 
@@ -55,12 +55,20 @@ Alternativ selbst bauen, siehe [Aus dem Quellcode bauen](#aus-dem-quellcode-baue
    %LOCALAPPDATA%\speech.cpp\models\sakasegawa--Haru-4B-GGUF\c372a527e63ca4251429a48863535b8bca03ebd6f414bbf31f28a9d175349934\Haru-4B-Q8_0.gguf
    ```
 
-   Eine frühere Q6_K-Datei bleibt im gemeinsamen speech.cpp-Cache liegen. Haru löscht sie nicht; sie lässt sich von Hand entfernen.
+   Eine frühere Q6_K-Datei bleibt im gemeinsamen speech.cpp-Cache liegen. Haru löscht sie nicht; sie lässt sich von Hand entfernen. Löscht die Deinstallation das Modell mit (siehe Deinstallation unten), entfällt sie ebenfalls, da sie im selben Modellordner liegt.
 
    Mit `SPEECH_MODEL_DIR=<absoluter Pfad>` (Umgebungsvariable) wird der Modellordner ersetzt. Ein relativer Pfad wird abgelehnt.
 4. Beim allerersten Start erscheint ein Hinweis: Kopfhörer klingen am besten, über Lautsprecher sorgt die Echounterdrückung dafür, dass Haru sich nicht selbst hört. Danach drückst du **Start**.
 
-Die Deinstallation lässt den Modell-Cache unangetastet.
+Die Oberfläche erscheint beim ersten Start in der Sprache des Betriebssystems, sofern sie unterstützt wird, sonst auf Englisch (siehe [Sprache](#sprache)).
+
+**Deinstallation:** Das Deinstallationsprogramm fragt am Ende, ob das Haru-Modell (ca. 6,6 GB) ebenfalls gelöscht werden soll. Die Standardantwort ist Nein. Bleibt das Modell erhalten, muss eine neue Installation es nicht erneut herunterladen.
+
+Gelöscht wird nur der Modellordner von Haru: `%LOCALAPPDATA%\speech.cpp\models\sakasegawa--Haru-4B-GGUF` (bzw. derselbe Ordner unter `SPEECH_MODEL_DIR`, falls gesetzt). Andere Modelle und der übrige speech.cpp-Cache bleiben erhalten. Leere Ordner `models` und `speech.cpp` am Standardort werden entfernt.
+
+Bei einem Update (Deinstallationsprogramm mit `/UPDATE`) wird nie gefragt und das Modell nie gelöscht. Auch stille (`/S`) und passive (`/P`) Deinstallationen fragen nicht; dort wird das Modell nur mit dem Parameter `/DELETEMODEL` entfernt, zum Beispiel `uninstall.exe /S /DELETEMODEL`.
+
+Die Option zum Löschen der Anwendungsdaten im Deinstallationsprogramm ist davon getrennt: Sie entfernt `settings.json` und die Datenordner der App, nicht das Modell.
 
 ## Bedienung
 
@@ -78,13 +86,12 @@ Gespeichert als `settings.json` im App-Config-Ordner (unter Windows `%APPDATA%\d
 
 | Schlüssel | Standard | Bedeutung |
 |---|---|---|
-| `language` | `"de"` | Gesprächssprache: de, en, es, fr, ja, ko, pt, ru, zh |
-| `name` | `"Haru"` | Name, den Haru verwendet. Leer oder `"Haru"` = Name der offiziellen Karte (Japanisch: ハル) |
-| `persona` | `""` | Freitext zur Persona. Leer = Persönlichkeit der offiziellen Karte |
+| `language` | Betriebssystem, sonst `"en"` | Sprache der Oberfläche und des Gesprächs (Feld „Sprache“): de, en, es, fr, ja, ko, pt, ru, zh |
+| `name` | `"Haru"` | Name, den Haru verwendet. Leer oder `"Haru"` = Name der Karte (Japanisch: ハル) |
 | `gender` | `null` | `"female"` oder `"male"` |
 | `backchannel` | `null` | Zwischenlaute: `"low"`, `"mid"`, `"high"`. `null` = Wert der offiziellen Karte (`mid`) |
 | `speakFirst` | `true` | Haru beginnt das Gespräch |
-| `temperature` | `0.7` | Zufälligkeit, 0 bis 2 |
+| `temperature` | `0.6` | Kreativität, 0,3 bis 1,0 (höher: Haru redet mehr und hört weniger zu) |
 | `topK` | `25` | Top-k-Sampling, 0 bis 500 |
 | `voicePath` | `null` | Optionale WAV-Datei für die Stimme |
 | `inputDevice` | `null` | Mikrofon (`null` = Standardgerät) |
@@ -98,9 +105,19 @@ Gespeichert als `settings.json` im App-Config-Ordner (unter Windows `%APPDATA%\d
 
 Änderungen an `backend`, `device` oder `voicePath` laden das Modell neu.
 
+### Sprache
+
+Die Einstellung `language` steuert die ganze Oberfläche (Startbildschirm, Hinweise, Einstellungen, Fehlermeldungen) und die Sprache, in der Haru spricht (Charakterkarte und Gespräch).
+
+Unterstützt werden Deutsch (`de`), English (`en`), Español (`es`), Français (`fr`), 日本語 (`ja`), 한국어 (`ko`), Português (`pt`), Русский (`ru`) und 中文 (`zh`, vereinfachtes Chinesisch).
+
+- **Erster Start:** Ohne `settings.json` oder mit einer unlesbaren bzw. beschädigten Datei (die dann als `settings.json.bad` gesichert wird) nimmt Haru die erste unterstützte Sprache aus den bevorzugten Sprachen des Betriebssystems. Regionale Varianten zählen zur Grundsprache (`de-AT` → `de`, `pt-BR` → `pt`, `zh-TW` → `zh`). Ist keine Sprache des Betriebssystems unterstützt, nimmt Haru Englisch.
+- **Ändern:** Nach dem Speichern in den Einstellungen wird die Oberfläche sofort in der neuen Sprache angezeigt. Ein laufendes Gespräch behält seine Sprache, die neue gilt ab dem nächsten Gespräch.
+- **Speichern:** Die gewählte Sprache steht ab dem ersten Speichern in `settings.json`, zum Beispiel wenn du den Kopfhörer-Hinweis bestätigst.
+
 ### Charakterkarte
 
-Haru nutzt die offizielle Charakterkarte (Preset `chat`) der gewählten Sprache. Sie ist in die App eingebettet (`app/src-tauri/assets/haru-cards/`, Apache-2.0, Quelle und Lizenz dort). Ein eigener Name, eine eigene Persona oder ein eigener Zwischenlaut-Wert überschreibt die Karte. Ein eigener Name ersetzt außerdem den Kartennamen in den Kartentexten.
+Haru nutzt die Karte der gewählten Persona (siehe [Personas: Engel und Dämon](#personas-engel-und-dämon)). Ein eigener Name oder ein eigener Zwischenlaut-Wert überschreibt die Karte. Ein eigener Name ersetzt außerdem „Haru“ in den Kartentexten.
 
 ### Gesprächsabschnitte
 
@@ -127,6 +144,20 @@ Ablauf des Modell-zuerst-Reglers:
 - Latenz über 450 ms für 0,5 s: eine Stufe nach unten, danach 1,5 s Ruhe bis zum nächsten Schritt.
 - Latenz über 700 ms für 0,2 s: sofort Tier 3.
 - Erholung: eine Stufe nach oben, wenn die Latenz 6 s lang unter 350 ms liegt.
+
+## Personas: Engel und Dämon
+
+Beim Start wählst du, wer Haru ist: links der Engel, rechts der Dämon. Klick, Enter oder Leertaste startet das Gespräch, die Pfeiltasten wechseln den Fokus.
+
+- **Startbildschirm:** Die Figuren liegen als WebP mit Alpha in `app/public/personas/` (`angel.webp`, `devil.webp`). Prompts und Originale liegen in `assets/personas/<angel|devil>/` (erzeugt mit dem Bildwerkzeug der Codex CLI). `scripts/export-personas.py` verkleinert sie für die App.
+- **Charakterkarten:** Jede Persona hat eine eigene Karte in allen 9 Sprachen, eingebettet aus `app/src-tauri/assets/persona-cards/<persona>/<lang>.json`. Die offiziellen Karten in `assets/haru-cards/` bleiben im Repo als Referenz, die App nutzt sie nicht mehr. Das Freitextfeld „Persona“ entfällt.
+- **Eigener Name:** Ersetzt „Haru“ in der Karte wie bisher.
+- **Grenzen des Dämons:** Verachtung, Spott und schwarzer Humor sind erlaubt. Ausgeschlossen sind echte Anleitungen zu Schaden, Aufforderungen zur Selbstverletzung und Hetze gegen Gruppen.
+- **Pro Gespräch:** `start_conversation` bekommt die Persona als Argument `persona`. Alle Abschnitte eines Gesprächs behalten sie. Das Beispiel `headless_talk` nimmt den Engel, außer `HARU_PERSONA=daemon` ist gesetzt.
+- **Dämonenkopf:** `app/public/heads/daemon.glb` ist ein realistischer Kopf mit echter Hauttextur (Codex-Referenzbild → VARCO 3D → `build_head.py`, siehe `assets/heads/README.md`). Im Composite ersetzt die Textur die Porzellanfarbe, das Tintengate bleibt. Der Engel behält den Porzellankopf.
+- **Glut-Palette:** Beim Dämon wechseln Orbiter und Wort-Tinte auf Glut (Schwarzrot → Karmin → Orange → Bernstein). Die Mikrofontinte bleibt kühl.
+- **Dämonenstimme:** Der Filter `DemonVoice` (`app/src-tauri/src/audio/voice_fx.rs`) senkt die Stimme um etwa 9 Halbtöne (Formanten -2), mischt eine leise Suboktave, fügt dezente Sättigung (kein Knurren) und einen FDN-Kellerhall hinzu. Er kostet etwa 64 ms zusätzliche Latenz. Für den Daemon wird eine männliche Basisstimme erzwungen. Er läuft vor der Wiedergabe, damit die Echounterdrückung genau das Signal sieht, das du hörst.
+- **A/B-Vergleich:** `HARU_VOICE_FX=off` schaltet den Filter ab. Offline auf eine WAV-Datei: `cargo run --example voice_fx --manifest-path app/src-tauri/Cargo.toml -- in.wav out.wav`.
 
 ## Backend-Auswahl
 
@@ -181,6 +212,8 @@ scripts\build-backends.ps1 -Variants cuda
 ```
 
 Das Ergebnis liegt in `app\src-tauri\backends\<variante>\speech.exe`. Der Ordner ist per `.gitignore` ausgeschlossen.
+
+Das Bauen wendet vorher alle Patches aus `patches/ggml/` auf das ggml-Submodul (`extern/speech.cpp/ggml`) an (`git apply`, idempotent: ein bereits angewendeter Patch wird übersprungen, ein nicht anwendbarer bricht den Build ab). Grund: Das gepinnte ggml bricht mit `GGML_ASSERT(wg0 <= maxComputeWorkGroupCount[0])` ab, wenn RMS_NORM mehr als 65535 Zeilen hat (Intel-GPUs, z. B. beim Anlegen einer Stimme aus einer Referenzaufnahme); der Patch behebt das, ohne einen eigenen Commit im verschachtelten Submodul zu brauchen. Die Patches ändern nur das Arbeitsverzeichnis des Submoduls.
 
 ### 3. Frontend und App
 
@@ -259,7 +292,7 @@ Rust-Kern, `app/src-tauri/src`:
 
 - `lib.rs`, `main.rs`, `commands.rs`: Tauri-Builder, Befehle (`#[tauri::command]`)
 - `ipc.rs`: IPC-Vertrag (Zustände, Viz-Frames, Download-Ereignisse)
-- `error.rs`, `settings.rs`, `paths.rs`, `model_fetch.rs`: Fehler, Einstellungen, Pfade, Download
+- `error.rs`, `settings.rs`, `locale.rs`, `paths.rs`, `model_fetch.rs`: Fehler, Einstellungen, Spracherkennung aus dem Betriebssystem, Pfade, Download
 - `session.rs`, `session/`: Zustandsmaschine, Gespräch, Mikrofon-Pumpe, Frame-Zeitleiste, Latenz, Viz
 - `backend/`: Varianten, Geräte, CUDA-Probe, Ausführungsplan
 - `worker/`: JSON-Lines-Protokoll, PCM-Codec, Prozess
@@ -273,7 +306,7 @@ Oberfläche, `app/src` (TypeScript):
 - `ipc/`: Vertragstypen, Tauri-Client, Mock-Client
 - `gl/`, `fluid/`, `post/`, `render/`: WebGL2, Stable-Fluids-Simulation, Post-Effekte, Qualitätsregler
 - `words/`, `audio/`: Wortpfade und Injektion, Audio-Kopplung
-- `ui/`: Overlays und `strings.ts` (deutsche Texte)
+- `ui/`: Overlays und `strings.ts` (Texte der Oberfläche in allen unterstützten Sprachen)
 
 ## Leistung (gemessen)
 

@@ -1,7 +1,8 @@
+import { de } from '../ui/locales/de';
 import {
   DEFAULT_SETTINGS,
-  type AudioDevices, type BackendOptions, type BootInfo, type DownloadEvent, type HaruClient, type HaruError,
-  type SaveSettingsResult, type Settings, type StateEvent, type VizFrame, type WordPiece,
+  type AudioDevices, type BackendOptions, type BootInfo, type DownloadEvent, type HaruClient, type HaruError, type MessageKey,
+  type Persona, type SaveSettingsResult, type Settings, type StateEvent, type VizFrame, type WordPiece,
 } from './types';
 
 export interface MockOptions { lang: 'de' | 'ja'; fail?: 'boot' | 'lag'; slow?: boolean }
@@ -46,6 +47,9 @@ export class MockClient implements HaruClient {
   private settings: Settings = { ...DEFAULT_SETTINGS };
   private modelPresent = false;
   private muted = false;
+  private _lastPersona: Persona | null = null;
+  /** The persona of the last startConversation call (for tests). */
+  get lastPersona(): Persona | null { return this._lastPersona; }
   private timer: ReturnType<typeof setInterval> | null = null;
   private readonly timeline: string[];
 
@@ -63,7 +67,7 @@ export class MockClient implements HaruClient {
   async getSettings(): Promise<Settings> { return { ...this.settings }; }
 
   async saveSettings(s: Settings): Promise<SaveSettingsResult> {
-    if (this.state.state === 'talking') throw this.err('busy', 'Während des Gesprächs nicht möglich.');
+    if (this.state.state === 'talking') throw this.err('busy', 'busy');
     const reloadRequired = s.backend !== this.settings.backend || s.device !== this.settings.device || s.voicePath !== this.settings.voicePath;
     this.settings = { ...s };
     if (reloadRequired) this.emit({ state: 'booting', backend: null, device: null, error: null, warning: null });
@@ -93,7 +97,7 @@ export class MockClient implements HaruClient {
   }
 
   async boot(onDownload: (e: DownloadEvent) => void): Promise<BootInfo> {
-    if (this.state.state === 'talking') throw this.err('busy', 'Während des Gesprächs nicht möglich.');
+    if (this.state.state === 'talking') throw this.err('busy', 'busy');
     const info: BootInfo = {
       backend: 'vulkan', device: 'Vulkan1', deviceName: 'Intel(R) Arc(TM) B580 Graphics',
       modelPath: 'C:\\mock\\Haru-4B-Q8_0.gguf',
@@ -104,7 +108,7 @@ export class MockClient implements HaruClient {
     this.emit({ state: 'booting', backend: null, device: null, error: null, warning: null });
     await sleep(600);
     if (this.options.fail === 'boot') {
-      const error = this.err('noBackend', 'Keine Backend-Variante gefunden.',
+      const error = this.err('noBackend', 'noBackendBuild',
         'searched: backends/vulkan/speech.exe, backends/cuda/speech.exe, backends/cpu/speech.exe');
       this.emit({ state: 'error', backend: null, device: null, error, warning: null });
       throw error;
@@ -137,11 +141,12 @@ export class MockClient implements HaruClient {
     return info;
   }
 
-  async startConversation(onViz: (f: VizFrame) => void): Promise<void> {
-    if (this.state.state !== 'ready') throw this.err('busy', 'Haru ist noch nicht bereit.');
+  async startConversation(persona: Persona, onViz: (f: VizFrame) => void): Promise<void> {
+    this._lastPersona = persona;
+    if (this.state.state !== 'ready') throw this.err('busy', 'busy');
     this.stopTimer();
     await sleep(START_MS); // the real core waits for frame 0 (about 4 s)
-    if (this.state.state !== 'ready') throw this.err('busy', 'Haru ist noch nicht bereit.');
+    if (this.state.state !== 'ready') throw this.err('busy', 'busy');
     const scriptLen = MOCK_SCRIPTS[this.options.lang].length;
     const t0 = performance.now();
     let lastFrame = -1;
@@ -171,7 +176,7 @@ export class MockClient implements HaruClient {
         if (this.state.state !== 'talking') return;
         this.stopTimer();
         // a conversation that ends by itself arrives as ready + error, like the real core
-        this.emit({ ...this.state, state: 'ready', error: this.err('lagLimit', 'Die Verbindung hinkt zu stark hinterher. Das Gespräch wurde beendet.') });
+        this.emit({ ...this.state, state: 'ready', error: this.err('lagLimit', 'lagLimit') });
       }, LAG_AFTER_MS);
     }
   }
@@ -193,7 +198,8 @@ export class MockClient implements HaruClient {
     for (const l of this.listeners) l(e);
   }
 
-  private err(code: HaruError['code'], message: string, detail: string | null = null): HaruError {
-    return { code, message, detail };
+  /** Like the real core: a key for the UI, its German text as `message`. */
+  private err(code: HaruError['code'], key: MessageKey, detail: string | null = null): HaruError {
+    return { code, key, message: de.messages[key], detail };
   }
 }

@@ -3,11 +3,11 @@
 Validate the runtime head GLBs (app/public/heads/<subject>.glb) against the contract in README.md and
 optionally record the outputs in <subject>/generation.json ("prepared" section).
 
-    python validate_heads.py [--subjects female male] [--record]
+    python validate_heads.py [female male daemon | --subjects female male daemon] [--record]
 
 Checks: GLB magic/version, one mesh named "Head" with one primitive (POSITION, NORMAL, TEXCOORD_0, indices),
 <= 40,000 triangles, 8 morph targets with POSITION + NORMAL deltas, mesh.extras.targetNames in contract order,
-scene.extras.haru landmarks, one embedded JPEG base-colour texture <= 1024^2, finite data, head height ~ 1.
+scene.extras.haru landmarks, one embedded JPEG base-colour texture <= 1024^2 (2048^2 for the textured `daemon` subject), finite data, head height ~ 1.
 Needs only Python 3 + numpy.
 """
 import argparse, datetime, hashlib, json, os, struct, sys
@@ -91,7 +91,7 @@ def jpeg_size(b):
     raise ValueError('no SOF')
 
 
-def validate(path):
+def validate(path, max_tex=1024):
     errs, info = [], {}
     js, binc = read_glb(path)
     info['glb_version'] = js['asset']['version']
@@ -183,22 +183,24 @@ def validate(path):
         info['texture'] = {'mime': im.get('mimeType'), 'width': w, 'height': h, 'bytes': len(raw)}
         if im.get('mimeType') != 'image/jpeg':
             errs.append('texture is not JPEG')
-        if w > 1024 or h > 1024:
-            errs.append(f'texture {w}x{h} > 1024')
+        if w > max_tex or h > max_tex:
+            errs.append(f'texture {w}x{h} > {max_tex}')
     return errs, info
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--subjects', nargs='*', default=['female', 'male'])
+    ap.add_argument('positional', nargs='*', choices=['female', 'male', 'daemon'], help='subjects (same as --subjects)')
+    ap.add_argument('--subjects', nargs='*', default=None, choices=['female', 'male', 'daemon'])
     ap.add_argument('--record', action='store_true', help='write the "prepared" section into generation.json')
     ap.add_argument('--blender', default='5.3.0')
     a = ap.parse_args()
+    a.subjects = a.subjects or a.positional or ['female', 'male']
     bad = 0
     for s in a.subjects:
         glb = os.path.join(REPO, 'app', 'public', 'heads', f'{s}.glb')
         blend = os.path.join(HERE, s, 'source.blend')
-        errs, info = validate(glb)
+        errs, info = validate(glb, 2048 if s == 'daemon' else 1024)
         print(f'== {s}: {"OK" if not errs else "FAIL"}  ({glb})')
         print(json.dumps(info, indent=1))
         for e in errs:

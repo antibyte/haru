@@ -1,6 +1,8 @@
 import type { DownloadEvent } from '../ipc/types';
 import { formatBytes, formatEta, formatRate } from './format';
-import { S } from './strings';
+import { APP_NAME, S, fill, formatPercent, uiText } from './strings';
+
+export type BootStatus = 'detecting' | 'loading' | 'downloading' | 'verifying';
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
   const e = document.createElement(tag);
@@ -17,12 +19,15 @@ export class BootScreen {
   private readonly fill: HTMLElement;
   private readonly meta: HTMLElement;
   private smoothedBps = 0;
+  private statusKey: BootStatus = 'detecting';
+  /** The last download event, so the meta line can be drawn again in another language. */
+  private lastEvent: DownloadEvent | null = null;
 
   constructor(root: HTMLElement) {
     this.rootEl = el('section', 'overlay boot');
     this.rootEl.setAttribute('aria-live', 'polite');
-    const mark = el('h1', 'boot-mark', S.appName);
-    this.status = el('p', 'boot-status', S.boot.detecting);
+    const mark = el('h1', 'boot-mark', APP_NAME);
+    this.status = el('p', 'boot-status');
     this.progress = el('div', 'boot-progress');
     const track = el('div', 'boot-track');
     this.fill = el('div', 'boot-fill');
@@ -31,12 +36,16 @@ export class BootScreen {
     this.progress.append(track, this.meta);
     this.rootEl.append(mark, this.status, this.progress);
     root.append(this.rootEl);
+    this.renderStatus();
   }
 
   show(): void { this.rootEl.classList.add('is-visible'); }
   hide(): void { this.rootEl.classList.remove('is-visible'); }
 
-  setStatus(text: string): void { this.status.textContent = text; }
+  setStatus(key: BootStatus): void {
+    this.statusKey = key;
+    this.renderStatus();
+  }
 
   onDownload(e: DownloadEvent): void {
     switch (e.event) {
@@ -46,29 +55,54 @@ export class BootScreen {
         this.progress.classList.add('is-active');
         this.progress.classList.remove('is-verifying', 'is-error');
         this.fill.style.width = `${total > 0 ? Math.min(100, (downloaded / total) * 100) : 0}%`;
+        break;
+      }
+      case 'verifying':
+        this.progress.classList.add('is-active', 'is-verifying');
+        this.fill.style.width = `${verifyPercent(e.data)}%`;
+        break;
+      case 'done':
+        this.fill.style.width = '100%';
+        this.progress.classList.remove('is-verifying');
+        break;
+      case 'error':
+        this.progress.classList.add('is-active', 'is-error');
+        break;
+    }
+    this.lastEvent = e;
+    this.renderMeta(e);
+  }
+
+  /** Draws status and meta line again in the active language. */
+  relabel(): void {
+    this.renderStatus();
+    this.renderMeta(this.lastEvent);
+  }
+
+  private renderStatus(): void {
+    this.status.textContent = S.boot[this.statusKey];
+  }
+
+  private renderMeta(e: DownloadEvent | null): void {
+    switch (e?.event) {
+      case 'progress': {
+        const { downloaded, total } = e.data;
         const eta = this.smoothedBps > 0 ? (total - downloaded) / this.smoothedBps : Infinity;
         this.setMeta([
           `${formatBytes(downloaded)} / ${formatBytes(total)}`,
           formatRate(this.smoothedBps),
-          `noch ${formatEta(eta)}`,
+          fill(S.boot.remaining, { eta: formatEta(eta) }),
         ]);
         break;
       }
-      case 'verifying': {
-        const pct = e.data.total > 0 ? Math.min(100, (e.data.done / e.data.total) * 100) : 0;
-        this.progress.classList.add('is-active', 'is-verifying');
-        this.fill.style.width = `${pct}%`;
-        this.setMeta([`${S.boot.verifying.replace('…', '')}… ${Math.round(pct)} %`]);
-        break;
-      }
-      case 'done':
-        this.fill.style.width = '100%';
-        this.progress.classList.remove('is-verifying');
-        this.setMeta([]);
+      case 'verifying':
+        this.setMeta([fill(S.boot.verifyingProgress, { pct: formatPercent(verifyPercent(e.data)) })]);
         break;
       case 'error':
-        this.progress.classList.add('is-active', 'is-error');
-        this.setMeta([e.data.message]);
+        this.setMeta([uiText(e.data)]);
+        break;
+      default: // done, or nothing yet
+        this.setMeta([]);
         break;
     }
   }
@@ -80,4 +114,8 @@ export class BootScreen {
       this.meta.append(el('span', undefined, p));
     });
   }
+}
+
+function verifyPercent(d: { done: number; total: number }): number {
+  return d.total > 0 ? Math.min(100, (d.done / d.total) * 100) : 0;
 }

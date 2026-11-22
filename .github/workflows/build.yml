@@ -46,7 +46,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: build/speech-vulkan
-          key: ${{ steps.key.outputs.key }}
+          key: ${{ steps.key.outputs.key }}-${{ hashFiles('patches/**') }}
       - name: Install the Vulkan SDK
         shell: pwsh
         run: |
@@ -80,7 +80,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: build/speech-cuda
-          key: ${{ steps.key.outputs.key }}
+          key: ${{ steps.key.outputs.key }}-${{ hashFiles('patches/**') }}
       - name: Install the CUDA toolkit
         uses: Jimver/cuda-toolkit@v0.2.24
         with:
@@ -163,6 +163,6 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: build/speech-vulkan
-          key: ${{ steps.key.outputs.key }}
+          key: ${{ steps.key.outputs.key }}-${{ hashFiles('patches/**') }}
       - name: Build the Vulkan backend (portability check)
         run: bash scripts/build-backends.sh vulkan

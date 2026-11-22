@@ -1,7 +1,16 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import fixtures from './contract.fixtures.json';
-import { DEFAULT_SETTINGS } from './types';
-import type { DownloadEvent, Settings, StateEvent, VizFrame } from './types';
+import { DEFAULT_SETTINGS, MESSAGE_KEYS } from './types';
+import { TauriClient, toHaruError } from './tauri-client';
+import type { DownloadEvent, HaruError, Persona, Settings, StateEvent, VizFrame } from './types';
+import { errorText, setLanguage, uiText } from '../ui/strings';
+
+const invoke = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke,
+  Channel: class { onmessage: unknown = null; },
+}));
+vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn() }));
 
 describe('IPC contract fixtures', () => {
   it('state events match StateEvent', () => {
@@ -9,13 +18,39 @@ describe('IPC contract fixtures', () => {
     const b = fixtures.stateEventError as StateEvent;
     expect(a.state).toBe('talking');
     expect(b.error?.code).toBe('noBackend');
+    expect(b.error?.key).toBe('noBackend');
+    expect(b.error && 'params' in b.error).toBe(false); // omitted when empty
     expect(a.notice).toBeUndefined();
   });
 
   it('notice event carries the notice', () => {
     const n = fixtures.stateEventNotice as StateEvent;
     expect(n.state).toBe('talking');
-    expect(n.notice).toBe('Neuer Gesprächsabschnitt – Haru fängt frisch an.');
+    expect(n.notice?.key).toBe('segmentRenewed');
+    expect(n.notice?.message).toBe('Neuer Gesprächsabschnitt – Haru fängt frisch an.');
+  });
+
+  it('warning event carries key and params, rendered like the German message', () => {
+    const w = (fixtures.stateEventWarning as StateEvent).warning!;
+    expect(w.key).toBe('smallGpu');
+    expect(w.params).toEqual({ device: 'Intel(R) UHD Graphics' });
+    setLanguage('de');
+    expect(uiText(w)).toBe(w.message);
+  });
+
+  it('error params are numbers, rendered with a German comma like the message', () => {
+    const e = fixtures.errorDiskSpace as HaruError;
+    expect(e.key).toBe('diskSpace');
+    expect(e.params).toEqual({ need: 7.5, free: 2.5 });
+    setLanguage('de');
+    expect(errorText(e)).toBe(e.message);
+    setLanguage('en');
+    expect(errorText(e)).toBe('Not enough disk space: 7.5 GB needed, 2.5 GB free.');
+  });
+
+  it('MESSAGE_KEYS equals fixtures.messageKeys (Rust MsgKey::ALL, same order)', () => {
+    expect([...MESSAGE_KEYS]).toEqual(fixtures.messageKeys);
+    expect(MESSAGE_KEYS).toHaveLength(62);
   });
 
   it('download events match DownloadEvent', () => {
@@ -26,6 +61,8 @@ describe('IPC contract fixtures', () => {
       fixtures.downloadError as DownloadEvent,
     ];
     expect(all.map((e) => e.event)).toEqual(['progress', 'verifying', 'done', 'error']);
+    const err = all[3];
+    expect(err.event === 'error' && err.data.key).toBe('downloadFailed');
   });
 
   it('vizFrame matches VizFrame with 16 model and 8 mic bands', () => {
@@ -39,5 +76,43 @@ describe('IPC contract fixtures', () => {
     const s = fixtures.settingsDefault as Settings;
     expect(s).toEqual(DEFAULT_SETTINGS);
     expect(DEFAULT_SETTINGS.echoCancellation).toBe(true);
+  });
+
+  it('start_conversation passes the persona as an argument next to the viz channel', async () => {
+    const fx = fixtures.startConversation as { persona: Persona };
+    expect(fx.persona).toBe('daemon');
+    await new TauriClient().startConversation(fx.persona, () => {});
+    expect(invoke).toHaveBeenCalledWith('start_conversation', expect.objectContaining({ persona: 'daemon', onViz: expect.anything() }));
+  });
+
+  it('settingsDefault no longer has a persona field', () => {
+    expect('persona' in fixtures.settingsDefault).toBe(false);
+    expect('persona' in DEFAULT_SETTINGS).toBe(false);
+  });
+});
+
+describe('toHaruError', () => {
+  it('keeps key/params and drops unknown key', () => {
+    expect(toHaruError(fixtures.errorDiskSpace)).toEqual({
+      code: 'diskSpace', key: 'diskSpace', params: { need: 7.5, free: 2.5 },
+      message: 'Nicht genug Speicherplatz: 7,5 GB benötigt, 2,5 GB frei.', detail: null,
+    });
+    const unknown = toHaruError({ code: 'worker', key: 'somethingNew', params: { a: 1 }, message: 'Neu.', detail: 'x' });
+    expect(unknown).toEqual({ code: 'worker', params: { a: 1 }, message: 'Neu.', detail: 'x' });
+    expect('key' in unknown).toBe(false);
+  });
+
+  it('accepts params only as a plain object of strings and numbers', () => {
+    expect(toHaruError({ code: 'io', key: 'ioError', params: ['x'], message: 'm', detail: null }).params).toBeUndefined();
+    expect(toHaruError({ code: 'io', key: 'ioError', params: 'x', message: 'm', detail: null }).params).toBeUndefined();
+    expect(toHaruError({ code: 'io', key: 'ioError', params: { a: 'x', b: 2, c: { d: 1 }, e: null }, message: 'm', detail: null }).params)
+      .toEqual({ a: 'x', b: 2 });
+  });
+
+  it("fallback uses 'unexpected' and stays 'unexpected' when converted again", () => {
+    const e = toHaruError(new Error('boom'));
+    expect(e).toEqual({ code: 'internal', key: 'unexpected', message: 'Unerwarteter Fehler.', detail: 'boom' });
+    expect(toHaruError(e)).toEqual(e);
+    expect(toHaruError('kaputt').detail).toBe('kaputt');
   });
 });

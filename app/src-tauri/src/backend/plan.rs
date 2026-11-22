@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use super::devices::{Device, DeviceKind};
 use super::variants::{Variant, VariantExe};
 use crate::error::{ErrorCode, HaruError};
+use crate::messages::MsgKey;
 use crate::settings::Settings;
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -169,7 +170,7 @@ pub fn run_attempts<T>(
             Err(e) => lines.push(format!("{}/{}: {}", a.variant.as_str(), a.device, e.message)),
         }
     }
-    Err(HaruError::new(ErrorCode::Worker, "Kein Backend konnte gestartet werden.").with_detail(lines.join("\n")))
+    Err(HaruError::new(ErrorCode::Worker, MsgKey::NoBackendStarted).with_detail(lines.join("\n")))
 }
 
 #[cfg(test)]
@@ -440,7 +441,7 @@ mod tests {
             if a.variant == Variant::Cpu {
                 Ok("ok")
             } else {
-                Err(HaruError::new(ErrorCode::Worker, "kaputt").backend_failure())
+                Err(HaruError::new(ErrorCode::Worker, MsgKey::WorkerStartFailed).backend_failure())
             }
         })
         .unwrap();
@@ -452,7 +453,7 @@ mod tests {
         let mut calls = 0;
         let e = run_attempts::<()>(&plan3(), |_| {
             calls += 1;
-            Err(HaruError::new(ErrorCode::Settings, "falsch"))
+            Err(HaruError::new(ErrorCode::Settings, MsgKey::LanguageUnsupported))
         })
         .unwrap_err();
         assert_eq!(calls, 1);
@@ -461,12 +462,12 @@ mod tests {
 
     #[test]
     fn all_failed_collects_messages() {
-        let e = run_attempts::<()>(&plan3(), |a| {
-            Err(HaruError::new(ErrorCode::Worker, format!("fail {}", a.device)).backend_failure())
+        let e = run_attempts::<()>(&plan3(), |_| {
+            Err(HaruError::new(ErrorCode::Worker, MsgKey::WorkerStartFailed).backend_failure())
         })
         .unwrap_err();
         assert_eq!(e.code, ErrorCode::Worker);
-        assert_eq!(e.message, "Kein Backend konnte gestartet werden.");
-        assert_eq!(e.detail.unwrap(), "cuda/CUDA0: fail CUDA0\nvulkan/Vulkan0: fail Vulkan0\ncpu/cpu: fail cpu");
+        assert_eq!(e.key, MsgKey::NoBackendStarted);
+        assert_eq!(e.detail.unwrap(), "cuda/CUDA0: Der Sprachmodell-Worker konnte nicht gestartet werden.\nvulkan/Vulkan0: Der Sprachmodell-Worker konnte nicht gestartet werden.\ncpu/cpu: Der Sprachmodell-Worker konnte nicht gestartet werden.");
     }
 }

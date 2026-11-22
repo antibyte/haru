@@ -1,6 +1,7 @@
 //! Fixed-chunk mono resampler (Task 1.4).
 
 use crate::error::{ErrorCode, HaruError};
+use crate::messages::MsgKey;
 use rubato::{FftFixedIn, Resampler};
 
 enum Inner {
@@ -18,7 +19,7 @@ impl FrameResampler {
             return Ok(Self { inner: Inner::Passthrough(chunk_in) });
         }
         let r = FftFixedIn::<f32>::new(from as usize, to as usize, chunk_in, 2, 1).map_err(|e| {
-            HaruError::new(ErrorCode::AudioDevice, "Audio konnte nicht umgewandelt werden.").with_detail(e.to_string())
+            HaruError::new(ErrorCode::AudioDevice, MsgKey::AudioConvertFailed).with_detail(e.to_string())
         })?;
         Ok(Self { inner: Inner::Fft(Box::new(r)) })
     }

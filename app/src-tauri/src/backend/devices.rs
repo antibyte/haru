@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use serde::Deserialize;
 
 use crate::error::{ErrorCode, HaruError};
+use crate::messages::MsgKey;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -44,7 +45,7 @@ struct DevicesDoc {
 
 pub fn parse_devices_json(s: &str) -> Result<Vec<Device>, HaruError> {
     serde_json::from_str::<DevicesDoc>(s.trim()).map(|d| d.devices).map_err(|e| {
-        HaruError::new(ErrorCode::NoBackend, "Die Geräteliste des Backends ist ungültig.")
+        HaruError::new(ErrorCode::NoBackend, MsgKey::BackendDevicesInvalid)
             .with_detail(format!("{e}: {}", s.chars().take(300).collect::<String>()))
     })
 }
@@ -65,7 +66,7 @@ pub fn query_devices(exe: &Path) -> Result<Vec<Device>, HaruError> {
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
     let fail = |detail: String| {
-        HaruError::new(ErrorCode::NoBackend, "Die Geräte des Backends konnten nicht abgefragt werden.")
+        HaruError::new(ErrorCode::NoBackend, MsgKey::BackendDevicesFailed)
             .with_detail(format!("{}: {detail}", exe.display()))
     };
     let mut child = cmd.spawn().map_err(|e| fail(e.to_string()))?;

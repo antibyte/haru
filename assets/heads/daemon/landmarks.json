@@ -1,0 +1,236 @@
+{
+ "normalise": {
+  "chin_z": -0.125,
+  "crown_z": 0.434,
+  "eye_z": 0.155,
+  "ear_y": -0.029,
+  "centre_x": 0.0
+ },
+ "views": {
+  "front": {
+   "kind": "front",
+   "centre": [
+    0,
+    0
+   ],
+   "scale": 1.2
+  },
+  "side": {
+   "kind": "side",
+   "centre": [
+    0.1,
+    0
+   ],
+   "scale": 1.2
+  },
+  "mouth": {
+   "kind": "front",
+   "centre": [
+    0,
+    -0.3
+   ],
+   "scale": 0.34
+  },
+  "eyes": {
+   "kind": "front",
+   "centre": [
+    0,
+    0.05
+   ],
+   "scale": 0.5
+  },
+  "sidemouth": {
+   "kind": "side",
+   "centre": [
+    0.35,
+    -0.28
+   ],
+   "scale": 0.5
+  },
+  "sidetop": {
+   "kind": "side",
+   "centre": [
+    0,
+    0.4
+   ],
+   "scale": 0.4
+  }
+ },
+ "picks": {
+  "mouth": {
+   "view": "mouth",
+   "px": [
+    500,
+    498
+   ]
+  },
+  "mouthL": {
+   "view": "mouth",
+   "px": [
+    905,
+    592
+   ]
+  },
+  "mouthR": {
+   "view": "mouth",
+   "px": [
+    40,
+    590
+   ]
+  },
+  "eyeL": {
+   "view": "eyes",
+   "px": [
+    800,
+    595
+   ]
+  },
+  "eyeR": {
+   "view": "eyes",
+   "px": [
+    200,
+    595
+   ]
+  },
+  "eyeLouter": {
+   "view": "eyes",
+   "px": [
+    950,
+    600
+   ]
+  },
+  "eyeLinner": {
+   "view": "eyes",
+   "px": [
+    610,
+    592
+   ]
+  },
+  "eyeLtop": {
+   "view": "eyes",
+   "px": [
+    800,
+    552
+   ]
+  },
+  "eyeLbottom": {
+   "view": "eyes",
+   "px": [
+    800,
+    640
+   ]
+  },
+  "browL": {
+   "view": "eyes",
+   "px": [
+    840,
+    480
+   ]
+  },
+  "browLinner": {
+   "view": "eyes",
+   "px": [
+    640,
+    540
+   ]
+  },
+  "chin": {
+   "view": "mouth",
+   "px": [
+    500,
+    930
+   ]
+  },
+  "noseTip": {
+   "view": "side",
+   "px": [
+    113,
+    640
+   ],
+   "x": 0.0
+  },
+  "jawPivot": {
+   "view": "side",
+   "px": [
+    555,
+    595
+   ],
+   "x": 0.0
+  },
+  "crown": {
+   "view": "sidetop",
+   "px": [
+    520,
+    255
+   ],
+   "x": 0.0
+  }
+ },
+ "landmarks": {
+  "mouth": [
+   0.0,
+   -0.29932,
+   0.47264
+  ],
+  "mouthL": [
+   0.14705,
+   -0.33094,
+   0.38909
+  ],
+  "mouthR": [
+   -0.14705,
+   -0.33094,
+   0.38909
+  ],
+  "eyeL": [
+   0.15,
+   0.0025,
+   0.31078
+  ],
+  "eyeR": [
+   -0.15,
+   0.0025,
+   0.31078
+  ],
+  "chin": [
+   0.0,
+   -0.4462,
+   0.47141
+  ],
+  "noseTip": [
+   0.0,
+   -0.168,
+   0.5644
+  ],
+  "jawPivot": [
+   0.0,
+   -0.114,
+   0.034
+  ],
+  "crown": [
+   0.0,
+   0.498,
+   -0.008
+  ]
+ },
+ "eye": {
+  "R": 0.06802,
+  "a": 0.08502,
+  "hu": 0.0215,
+  "hl": 0.0225,
+  "xInner": 0.055,
+  "xOuter": 0.225
+ },
+ "brow": {
+  "peakL": [
+   0.17,
+   0.06,
+   0.44908
+  ],
+  "innerL": [
+   0.07,
+   0.03,
+   0.46746
+  ]
+ }
+}

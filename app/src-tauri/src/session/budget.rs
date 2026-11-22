@@ -223,7 +223,7 @@ mod tests {
     #[test]
     fn measure_uses_fallback_on_query_error_or_missing_device() {
         let probe = Probe { exe: "x".into(), device: "Vulkan0".into() };
-        let failing = |_: &Path| Err(HaruError::new(crate::error::ErrorCode::NoBackend, "x"));
+        let failing = |_: &Path| Err(HaruError::new(crate::error::ErrorCode::NoBackend, crate::messages::MsgKey::NoBackend));
         let b = measure_with(&|_| None, &failing, &|_| None, Some(&probe), Some(700.0));
         assert_eq!(b, Budget { seconds: 700.0, source: Source::Fallback });
         assert_eq!(b.measured(), None);

@@ -12,7 +12,8 @@ import { GlyphRasterizer } from '../words/glyphs';
 import { WordInjector } from '../words/injector';
 import { WordPath } from '../words/path';
 import { WordAssembler, type WordEvent } from '../words/assembler';
-import { FaceLayer } from '../heads/face';
+import { FaceLayer, TEXTURED_HEADS } from '../heads/face';
+import type { Persona } from '../ipc/types';
 import type { Quality, QualityLevel, VizFrame } from '../ipc/types';
 
 import baseVert from '../fluid/shaders/base.vert?raw';
@@ -79,6 +80,7 @@ export class Renderer {
   private running = false;
   private lastNow = 0;
   private timeSec = 0;
+  private emberAmt = 0;
   private resizeAt = 0;
   private fpsEl: HTMLDivElement | null = null;
   private frameEma = 16.7;
@@ -124,7 +126,8 @@ export class Renderer {
     this.coupling = new AudioCoupling(this.sim);
     this.glyphs = new GlyphRasterizer(this.glc.gl);
     this.injector = new WordInjector(this.sim, this.glyphs, this.path);
-    this.face = new FaceLayer(this.glc);
+    const texturedHeads = this.debug && this.params.get('head') === 'female-textured' ? new Set([...TEXTURED_HEADS, 'female']) : TEXTURED_HEADS;
+    this.face = new FaceLayer(this.glc, undefined, texturedHeads);
     if (this.debug) this.setupDebug();
   }
 
@@ -230,6 +233,18 @@ export class Renderer {
     this.face.setGender(gender);
     this.face.setEnabled(show);
   }
+  /**
+   * null = start screen / neutral. angel = porcelain head by gender + neutral ink; daemon = daemon.glb + ember ink.
+   * (Debug: `?head=female-textured` makes the female head use its own base colour, to check the textured path.)
+   */
+  setPersona(p: Persona | null): void {
+    this.face.setPersona(p);
+    const ember = p === 'daemon';
+    this.coupling.setPalette(ember ? 'ember' : 'neutral');
+    this.sim.params.ember = ember ? 1 : 0;
+    this.injector.ember = ember;
+    this.emberAmt = ember ? 1 : 0;
+  }
   setDownloadRate(bps: number): void { this.downloadBps = Math.max(0, bps); }
   pushViz(f: VizFrame): void {
     this.pendingViz = f;
@@ -322,6 +337,7 @@ export class Renderer {
       timeSec: this.timeSec,
       rms: this.caRms,
       lightPos: this.lightPos,
+      ember: this.emberAmt,
     }, this.faceDebug && this.face.postInputs ? { ...this.face.postInputs, debug: true } : this.face.postInputs);
   }
 

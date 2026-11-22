@@ -6,6 +6,7 @@ const HEADPHONES = `<svg viewBox="0 0 48 48" width="44" height="44" fill="none" 
 /** One-time hint card shown before the first conversation. */
 export class HeadphoneHint {
   private readonly rootEl: HTMLElement;
+  private readonly text: HTMLElement;
   private readonly button: HTMLButtonElement;
   private resolve: (() => void) | null = null;
 
@@ -19,20 +20,24 @@ export class HeadphoneHint {
     const icon = document.createElement('div');
     icon.className = 'hint-icon';
     icon.innerHTML = HEADPHONES;
-    const text = document.createElement('p');
-    text.className = 'hint-text';
-    text.textContent = S.hint.text;
+    this.text = document.createElement('p');
+    this.text.className = 'hint-text';
     this.button = document.createElement('button');
     this.button.className = 'btn btn-primary';
     this.button.type = 'button';
-    this.button.textContent = S.hint.ok;
     this.button.addEventListener('click', () => this.close());
-    card.append(icon, text, this.button);
+    card.append(icon, this.text, this.button);
     this.rootEl.append(card);
     root.append(this.rootEl);
+    this.relabel();
   }
 
-  /** Resolves when the user confirms with "Verstanden". */
+  relabel(): void {
+    this.text.textContent = S.hint.text;
+    this.button.textContent = S.hint.ok;
+  }
+
+  /** Resolves when the user confirms (the OK button). */
   show(): Promise<void> {
     return new Promise<void>((resolve) => {
       this.resolve = resolve;

@@ -7,17 +7,17 @@ use std::time::{Duration, Instant};
 
 use crate::audio::aec::{delay_hint_ms, load_latency_ms, AecError, VoiceProcessor};
 use crate::audio::capture::CaptureHandle;
+use crate::audio::echo_sim::Room;
 use crate::audio::features::{Analyzer, Features, MIC_BANDS};
 use crate::audio::playback::PlaybackShared;
 use crate::error::{ErrorCode, HaruError};
+use crate::messages::{MsgKey, UiText};
 use crate::worker::pcm::encode_f32;
 use crate::worker::process::WorkerSender;
 use crate::worker::protocol::ClientMsg;
 
 pub const POLL: Duration = Duration::from_millis(5);
 pub const NO_DATA_TIMEOUT: Duration = Duration::from_millis(1000);
-/// Shown once when echo cancellation drops out in the middle of a conversation.
-pub const AEC_FAILED_WARNING: &str = "Echounterdrückung ausgefallen – bitte Kopfhörer verwenden.";
 
 #[derive(Default)]
 pub struct MicShared {
@@ -30,6 +30,8 @@ pub struct MicShared {
     pub segment: AtomicU64,
     pub levels: Mutex<Option<Features>>,
     pub stop: AtomicBool,
+    /// Diagnostic recorder (env `HARU_DUMP_DIR`); `None` normally.
+    pub dump: Option<Arc<crate::session::conversation::Dump>>,
 }
 
 /// Pops up to `want` samples from the capture ring into `buf`.
@@ -47,9 +49,11 @@ pub struct EchoInput {
     processor: VoiceProcessor,
     tap: rtrb::Consumer<f32>,
     playback: Arc<PlaybackShared>,
-    on_warning: Arc<dyn Fn(String) + Send + Sync>,
+    on_warning: Arc<dyn Fn(UiText) + Send + Sync>,
     /// Smoothed stream delay hint in ms.
     hint_ms: Option<f64>,
+    /// Chunks seen by `dump_tick` (diagnostics).
+    dump_ticks: u64,
 }
 
 impl EchoInput {
@@ -57,9 +61,9 @@ impl EchoInput {
         processor: VoiceProcessor,
         tap: rtrb::Consumer<f32>,
         playback: Arc<PlaybackShared>,
-        on_warning: Arc<dyn Fn(String) + Send + Sync>,
+        on_warning: Arc<dyn Fn(UiText) + Send + Sync>,
     ) -> Self {
-        Self { processor, tap, playback, on_warning, hint_ms: None }
+        Self { processor, tap, playback, on_warning, hint_ms: None, dump_ticks: 0 }
     }
 
     /// Drops whatever the output played so far (no conversation yet: nothing may pile up).
@@ -101,13 +105,37 @@ impl EchoInput {
         self.processor.process_capture(buf)
     }
 
+    /// Diagnostics (`HARU_DUMP_DIR`): hands the reference as fed and, about every 100 ms, sonora's statistics to the dump.
+    fn dump_tick(&mut self, d: &crate::session::conversation::Dump) {
+        let r = self.processor.take_render_record();
+        if !r.is_empty() {
+            d.render(&r);
+        }
+        self.dump_ticks += 1;
+        if self.dump_ticks.is_multiple_of(5) {
+            d.set_aec(&self.processor.stats());
+        }
+    }
+
     fn summary(&self) -> String {
+        let s = self.processor.stats();
+        let r1 = |v: Option<f64>| v.map(|x| (x * 10.0).round() / 10.0);
+        let r3 = |v: Option<f64>| v.map(|x| (x * 1000.0).round() / 1000.0);
         format!(
-            "ERLE {:?} dB, delay {:?} ms, {} capture / {} render frames, tap dropped {}",
-            self.processor.erle_db().map(|e| e.round()),
-            self.processor.estimated_delay_ms(),
+            "ERLE {:?} dB (0.0 is sonora's floor, not a measurement), ERL {:?} dB, delay {:?} ms (median {:?}, std {:?}), \
+             divergent filter fraction {:?}, residual echo likelihood {:?} (recent max {:?}), \
+             {} capture / {} render frames, render RMS {:.4}, tap dropped {}",
+            r1(s.echo_return_loss_enhancement),
+            r1(s.echo_return_loss),
+            s.delay_ms,
+            s.delay_median_ms,
+            s.delay_standard_deviation_ms,
+            r3(s.divergent_filter_fraction),
+            r3(s.residual_echo_likelihood),
+            r3(s.residual_echo_likelihood_recent_max),
             self.processor.capture_frames(),
             self.processor.render_frames(),
+            self.processor.render_rms(),
             self.playback.tap_dropped.load(Ordering::Relaxed)
         )
     }
@@ -124,6 +152,11 @@ pub fn spawn_mic_pump(
         .name("haru-mic-pump".into())
         .spawn(move || {
             let mut echo = echo;
+            if shared.dump.is_some() {
+                if let Some(e) = echo.as_mut() {
+                    e.processor.record_render(true);
+                }
+            }
             let chunk = (capture.rate / 50) as usize;
             let mut analyzer = Analyzer::new(capture.rate, chunk, MIC_BANDS, 80.0, 8000.0);
             let mut buf: Vec<f32> = Vec::with_capacity(chunk);
@@ -145,24 +178,33 @@ pub fn spawn_mic_pump(
                 fill(&mut capture.consumer, &mut buf, chunk);
                 if buf.len() < chunk {
                     if last_data.elapsed() > NO_DATA_TIMEOUT {
-                        on_fatal(HaruError::new(ErrorCode::NoMicrophone, "Das Mikrofon liefert keine Daten."));
+                        on_fatal(HaruError::new(ErrorCode::NoMicrophone, MsgKey::MicNoData));
                         return;
                     }
                     thread::sleep(POLL);
                     continue;
                 }
                 last_data = Instant::now();
+                if let Some(d) = &shared.dump {
+                    d.mic_raw(&buf);
+                }
                 // Remove Haru's own voice before anything else looks at the signal (mute, levels, worker).
                 let failed = echo.as_mut().and_then(|e| e.process(&mut buf, &capture).err());
+                if let (Some(d), Some(e)) = (&shared.dump, echo.as_mut()) {
+                    e.dump_tick(d);
+                }
                 if let Some(err) = failed {
                     eprintln!("haru: echo cancellation off for this conversation: {err}");
                     if let Some(e) = echo.take() {
-                        (e.on_warning)(AEC_FAILED_WARNING.to_string());
+                        (e.on_warning)(UiText::new(MsgKey::AecFailed));
                     }
                 }
                 let muted = shared.muted.load(Ordering::Relaxed);
                 if muted {
                     buf.iter_mut().for_each(|s| *s = 0.0);
+                }
+                if let Some(d) = &shared.dump {
+                    d.mic_sent(&buf);
                 }
                 let levels = if muted { None } else { Some(analyzer.analyze(&buf)) };
                 *shared.levels.lock().unwrap_or_else(|e| e.into_inner()) = levels;
@@ -193,8 +235,20 @@ pub fn spawn_mic_pump(
 pub fn spawn_sample_feeder(
     samples: Vec<f32>,
     rate: u32,
+    producer: rtrb::Producer<f32>,
+    shared: Arc<MicShared>,
+) -> JoinHandle<()> {
+    spawn_sample_feeder_with_room(samples, rate, producer, shared, None)
+}
+
+/// Like `spawn_sample_feeder`, but with a simulated room: the echo of what the virtual player played is mixed into
+/// every delivered sample (the room works at `rate`, the capture rate), clamped like an ADC would.
+pub fn spawn_sample_feeder_with_room(
+    samples: Vec<f32>,
+    rate: u32,
     mut producer: rtrb::Producer<f32>,
     shared: Arc<MicShared>,
+    room: Option<Arc<Mutex<Room>>>,
 ) -> JoinHandle<()> {
     thread::Builder::new()
         .name("haru-mic-feeder".into())
@@ -206,15 +260,31 @@ pub fn spawn_sample_feeder(
                 thread::sleep(POLL);
             }
             let t0 = Instant::now();
+            // Capture-rate samples between the room's clock origin and the first delivered sample.
+            let base = room
+                .as_ref()
+                .map(|r| (t0.saturating_duration_since(r.lock().unwrap_or_else(|e| e.into_inner()).t0()).as_secs_f64() * rate as f64).round() as i64)
+                .unwrap_or(0);
             let mut fed = 0u64;
             while !shared.stop.load(Ordering::Acquire) {
                 let due = (t0.elapsed().as_secs_f64() * rate as f64) as u64;
-                while fed < due {
-                    let s = samples.get(fed as usize).copied().unwrap_or(0.0);
-                    let _ = producer.push(s);
-                    fed += 1;
+                if fed < due {
+                    let n = (due - fed) as usize;
+                    let echo = room.as_ref().map(|r| r.lock().unwrap_or_else(|e| e.into_inner()).echo_block(base + fed as i64, n));
+                    for i in 0..n {
+                        let mut s = samples.get(fed as usize + i).copied().unwrap_or(0.0);
+                        if let Some(e) = &echo {
+                            s = (s + e[i]).clamp(-1.0, 1.0);
+                        }
+                        let _ = producer.push(s);
+                    }
+                    fed = due;
                 }
                 thread::sleep(POLL);
+            }
+            if let Some(r) = &room {
+                let r = r.lock().unwrap_or_else(|e| e.into_inner());
+                eprintln!("haru: echo sim: {} echo samples were requested before the played audio existed (treated as silence)", r.starved);
             }
         })
         .expect("spawn sample feeder thread")
@@ -332,13 +402,13 @@ mod tests {
         let mut vp = VoiceProcessor::new(16_000, 16_000, Stages::EchoOnly).unwrap();
         vp.fail_next_for_test();
         let (_tap_prod, tap) = rtrb::RingBuffer::new(4800);
-        let warnings = Arc::new(Mutex::new(Vec::<String>::new()));
+        let warnings = Arc::new(Mutex::new(Vec::<UiText>::new()));
         let w2 = warnings.clone();
         let echo = EchoInput::new(vp, tap, Arc::new(PlaybackShared::default()), Arc::new(move |t| w2.lock().unwrap().push(t)));
         let pump = spawn_mic_pump(cap, sender, shared.clone(), no_fatal(), Some(echo));
         let got = chunks(&rx, 3);
         stop(&shared, pump);
-        assert_eq!(*warnings.lock().unwrap(), vec![AEC_FAILED_WARNING.to_string()]);
+        assert_eq!(*warnings.lock().unwrap(), vec![UiText::new(MsgKey::AecFailed)]);
         for (g, want) in got.iter().zip(&input) {
             assert_eq!(g["pcm"], encode_f32(want).as_str());
         }
@@ -422,5 +492,32 @@ mod tests {
         let erle = ratio_db(&mic[a..b], &out[a..b]);
         eprintln!("real-time simulation: {} samples through the pump, ERLE 5-8 s {erle:.1} dB", out.len());
         assert!(erle >= 15.0, "ERLE {erle:.1} dB");
+    }
+
+    /// The feeder mixes the room's echo into the delivered microphone samples at the right time.
+    #[test]
+    fn feeder_mixes_room_echo_at_the_right_time() {
+        use crate::audio::echo_sim::EchoSim;
+        let sim = EchoSim { gain: 0.5, delay_ms: 20.0, device_latency_ms: 30.0, rt60_s: 0.0, soft_clip: false, ..Default::default() };
+        let mut room = Room::new(sim, 16_000, 16_000).unwrap();
+        let mut played = vec![0.0f32; 16_000];
+        played[800] = 0.8; // 50 ms after the room's clock origin; echo 50 ms later (800 samples)
+        room.push_played(&played);
+        let room = Arc::new(Mutex::new(room));
+        let (prod, mut cons) = rtrb::RingBuffer::new(32_000);
+        let shared = Arc::new(MicShared::default());
+        shared.started.store(true, Ordering::Release);
+        let feeder = spawn_sample_feeder_with_room(vec![0.0; 100], 16_000, prod, shared.clone(), Some(room));
+        thread::sleep(Duration::from_millis(400));
+        shared.stop.store(true, Ordering::Release);
+        feeder.join().unwrap();
+        let mut got = Vec::new();
+        while let Ok(s) = cons.pop() {
+            got.push(s);
+        }
+        let (peak, v) = got.iter().enumerate().fold((0, 0.0f32), |a, (i, s)| if s.abs() > a.1.abs() { (i, *s) } else { a });
+        assert!((v - 0.4).abs() < 1e-6, "peak {v}");
+        // Delivered sample n is at (base + n) of the room clock; base is the few ms between Room::new and the feeder start.
+        assert!((1600 - 160..=1600).contains(&peak), "peak at {peak}");
     }
 }

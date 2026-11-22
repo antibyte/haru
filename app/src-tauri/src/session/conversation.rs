@@ -6,16 +6,19 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crate::audio::aec::{Stages, VoiceProcessor, LATENCY_UNKNOWN};
+use crate::audio::aec::{store_latency, Stages, VoiceProcessor, LATENCY_UNKNOWN};
 use crate::audio::capture::CaptureHandle;
+use crate::audio::echo_sim::{EchoSim, Room};
 use crate::audio::engine::{AudioEngine, PREBUFFER_FRAMES};
 use crate::audio::features::{Analyzer, BLOCK, MODEL_BANDS};
-use crate::audio::playback::{JitterGate, PlaybackHandle, PlaybackShared};
+use crate::audio::playback::{render_block, JitterGate, PlaybackHandle, PlaybackShared};
 use crate::audio::resample::FrameResampler;
+use crate::audio::voice_fx::{effective_style, VoiceFx, VoiceStyle};
 use crate::error::{ErrorCode, HaruError};
+use crate::messages::{MsgKey, UiText};
 use crate::ipc::VizFrame;
 use crate::session::latency::{backlog_secs, classify, LagLevel};
-use crate::session::mic_pump::{spawn_mic_pump, spawn_sample_feeder, EchoInput, MicShared};
+use crate::session::mic_pump::{spawn_mic_pump, spawn_sample_feeder_with_room, EchoInput, MicShared};
 use crate::session::timeline::FrameTimeline;
 use crate::session::viz::{build_frame, FeatureClock};
 use crate::settings::Settings;
@@ -23,8 +26,6 @@ use crate::worker::pcm::decode_f32;
 use crate::worker::process::WorkerSender;
 use crate::worker::protocol::{is_segment_limit, worker_error, ClientMsg, DialogueOptions, WorkerMsg};
 
-/// Shown when echo cancellation is wanted but cannot be set up for this conversation.
-pub const AEC_UNAVAILABLE_WARNING: &str = "Echounterdrückung nicht verfügbar – bitte Kopfhörer verwenden.";
 pub const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(30);
 pub const FRAME_SAMPLES: usize = 3200;
 pub const TICK: Duration = Duration::from_millis(16);
@@ -59,6 +60,9 @@ pub enum ConversationEnd {
     Failed(HaruError),
 }
 
+/// A shared sample recorder (see `ConversationIo::model_tap`).
+pub type SampleTap = Arc<Mutex<Vec<f32>>>;
+
 /// Test / headless input and output substitutes. The default uses the real devices.
 #[derive(Clone, Default)]
 pub struct ConversationIo {
@@ -67,6 +71,207 @@ pub struct ConversationIo {
     pub input_samples: Option<(u32, Vec<f32>)>,
     /// Do not make any sound: Haru's audio is consumed by a virtual real-time sink.
     pub no_playback: bool,
+    /// Virtual acoustic loop (needs `no_playback` and `input_samples`): what the virtual player plays is fed to the AEC
+    /// render tap like the real playback callback does, passed through a simulated room and mixed into the mic samples.
+    pub virtual_echo: Option<EchoSim>,
+    /// Recording tap (headless tuning): the decoded 24 kHz worker frames BEFORE the voice effect.
+    pub model_tap: Option<SampleTap>,
+    /// Recording tap: the 24 kHz frames AFTER the voice effect.
+    pub fx_tap: Option<SampleTap>,
+    /// Test seam: collects the samples pushed to the playback ring.
+    #[cfg(test)]
+    pub push_tap: Option<Arc<Mutex<Vec<f32>>>>,
+}
+
+/// Diagnostic dump of one conversation: set this env var to a directory (see `Dump`).
+pub const DUMP_ENV: &str = "HARU_DUMP_DIR";
+/// Per-stream cap of the in-memory dump buffers.
+const DUMP_CAP_SECS: usize = 15 * 60;
+
+#[derive(Default)]
+struct DumpStream {
+    rate: u32,
+    samples: Vec<f32>,
+}
+
+/// In-memory recorder, written to `<HARU_DUMP_DIR>/<conversation id>/` when the conversation ends:
+/// `mic_raw.wav` (capture before echo cancellation / noise suppression / mute, capture rate),
+/// `mic_sent.wav` (exactly what is sent to the worker, after AEC and mute, capture rate),
+/// `model_dry.wav` (decoded worker frames before the voice effect, 24 kHz),
+/// `model_out.wav` (the frames pushed to the playback ring: after voice effect AND resampling, at the
+/// output rate; the jitter-gate tail padding is not included) and `frames.csv`.
+/// Never blocks: only short mutex-guarded appends; the files are written in `finish`.
+pub struct Dump {
+    dir: std::path::PathBuf,
+    t0: Instant,
+    unix0_ms: u128,
+    mic_raw: Mutex<DumpStream>,
+    mic_sent: Mutex<DumpStream>,
+    model_dry: Mutex<DumpStream>,
+    model_out: Mutex<DumpStream>,
+    /// The AEC reference exactly as fed to the VoiceProcessor (capture rate, after resampling).
+    render: Mutex<DumpStream>,
+    /// Latest sonora statistics as CSV fields (`aec_fields`), empty fields when there is no AEC.
+    aec: Mutex<String>,
+    /// Latest backlog in seconds (f64 bits), set by the viz ticker.
+    backlog_bits: AtomicU64,
+    /// (sum of squares, samples) of the mic audio sent since the last frame row.
+    mic_acc: Mutex<(f64, u64)>,
+    rows: Mutex<Vec<String>>,
+    finished: AtomicBool,
+}
+
+fn push_capped(m: &Mutex<DumpStream>, s: &[f32]) {
+    let mut g = m.lock().unwrap_or_else(|e| e.into_inner());
+    let cap = g.rate.max(1) as usize * DUMP_CAP_SECS;
+    let room = cap.saturating_sub(g.samples.len());
+    g.samples.extend_from_slice(&s[..s.len().min(room)]);
+}
+
+fn rms_of(s: &[f32]) -> f64 {
+    if s.is_empty() {
+        return 0.0;
+    }
+    (s.iter().map(|x| (*x as f64) * (*x as f64)).sum::<f64>() / s.len() as f64).sqrt()
+}
+
+impl Dump {
+    /// `None` (and no allocation) when `HARU_DUMP_DIR` is unset or empty.
+    pub fn from_env(id: &str) -> Option<Arc<Dump>> {
+        let base = std::env::var_os(DUMP_ENV).filter(|v| !v.is_empty())?;
+        let name: String = id.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
+        let dir = std::path::PathBuf::from(base).join(name);
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            eprintln!("haru: dump dir {}: {e}", dir.display());
+            return None;
+        }
+        eprintln!("haru: dumping conversation {id} to {}", dir.display());
+        let stream = |rate| Mutex::new(DumpStream { rate, samples: Vec::new() });
+        Some(Arc::new(Dump {
+            dir,
+            t0: Instant::now(),
+            unix0_ms: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis()),
+            mic_raw: stream(0),
+            mic_sent: stream(0),
+            model_dry: stream(24000),
+            model_out: stream(0),
+            render: stream(0),
+            aec: Mutex::new(",,,,,,,".to_string()),
+            backlog_bits: AtomicU64::new(0f64.to_bits()),
+            mic_acc: Mutex::new((0.0, 0)),
+            rows: Mutex::new(vec![
+                "unix_ms,wall_ms,seq,model_rms,mic_sent_rms,backlog_s,erle_db,erl_db,delay_ms,delay_median_ms,delay_std_ms,divergent_fraction,residual_echo_likelihood,residual_echo_recent_max,text"
+                    .to_string(),
+            ]),
+            finished: AtomicBool::new(false),
+        }))
+    }
+
+    pub fn set_rates(&self, mic_rate: u32, out_rate: u32) {
+        self.mic_raw.lock().unwrap_or_else(|e| e.into_inner()).rate = mic_rate;
+        self.mic_sent.lock().unwrap_or_else(|e| e.into_inner()).rate = mic_rate;
+        self.model_out.lock().unwrap_or_else(|e| e.into_inner()).rate = out_rate;
+        self.render.lock().unwrap_or_else(|e| e.into_inner()).rate = mic_rate;
+    }
+
+    /// Viz ticker: current backlog in seconds (written into the next frame rows).
+    pub fn set_backlog(&self, secs: f64) {
+        self.backlog_bits.store(secs.to_bits(), Ordering::Relaxed);
+    }
+
+    /// Mic pump: reference samples fed to the AEC since the last call.
+    pub fn render(&self, s: &[f32]) {
+        push_capped(&self.render, s);
+    }
+
+    /// Mic pump: latest AEC statistics (about every 100 ms).
+    pub fn set_aec(&self, st: &sonora::AudioProcessingStats) {
+        fn f(v: Option<f64>) -> String {
+            v.map_or(String::new(), |x| format!("{x:.4}"))
+        }
+        fn i(v: Option<i32>) -> String {
+            v.map_or(String::new(), |x| x.to_string())
+        }
+        *self.aec.lock().unwrap_or_else(|e| e.into_inner()) = format!(
+            "{},{},{},{},{},{},{},{}",
+            f(st.echo_return_loss_enhancement),
+            f(st.echo_return_loss),
+            i(st.delay_ms),
+            i(st.delay_median_ms),
+            i(st.delay_standard_deviation_ms),
+            f(st.divergent_filter_fraction),
+            f(st.residual_echo_likelihood),
+            f(st.residual_echo_likelihood_recent_max)
+        );
+    }
+
+    /// Mic pump: one chunk as captured.
+    pub fn mic_raw(&self, s: &[f32]) {
+        push_capped(&self.mic_raw, s);
+    }
+
+    /// Mic pump: one chunk exactly as sent to the worker.
+    pub fn mic_sent(&self, s: &[f32]) {
+        push_capped(&self.mic_sent, s);
+        let mut a = self.mic_acc.lock().unwrap_or_else(|e| e.into_inner());
+        a.0 += s.iter().map(|x| (*x as f64) * (*x as f64)).sum::<f64>();
+        a.1 += s.len() as u64;
+    }
+
+    /// Dispatch: one decoded worker frame (before the voice effect) with its text piece.
+    pub fn model_frame(&self, seq: u64, dry: &[f32], text: Option<&str>) {
+        push_capped(&self.model_dry, dry);
+        let mic = {
+            let mut a = self.mic_acc.lock().unwrap_or_else(|e| e.into_inner());
+            let r = if a.1 > 0 { (a.0 / a.1 as f64).sqrt() } else { 0.0 };
+            *a = (0.0, 0);
+            r
+        };
+        let wall = self.t0.elapsed().as_millis();
+        let text = text.unwrap_or("").replace('"', "\"\"").replace(['\r', '\n'], " ");
+        let aec = self.aec.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let backlog = f64::from_bits(self.backlog_bits.load(Ordering::Relaxed));
+        self.rows
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(format!("{},{wall},{seq},{:.5},{mic:.5},{backlog:.3},{aec},\"{text}\"", self.unix0_ms + wall, rms_of(dry)));
+    }
+
+    /// Dispatch: the frame as pushed to playback.
+    pub fn model_out(&self, s: &[f32]) {
+        push_capped(&self.model_out, s);
+    }
+
+    /// Writes all files (once).
+    pub fn finish(&self) {
+        if self.finished.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        for (name, m) in [("mic_raw", &self.mic_raw), ("mic_sent", &self.mic_sent), ("model_dry", &self.model_dry), ("model_out", &self.model_out), ("render", &self.render)] {
+            let g = m.lock().unwrap_or_else(|e| e.into_inner());
+            if g.samples.is_empty() || g.rate == 0 {
+                continue;
+            }
+            let path = self.dir.join(format!("{name}.wav"));
+            let spec = hound::WavSpec { channels: 1, sample_rate: g.rate, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
+            let res = hound::WavWriter::create(&path, spec).and_then(|mut w| {
+                for &x in &g.samples {
+                    w.write_sample((x.clamp(-1.0, 1.0) * 32767.0) as i16)?;
+                }
+                w.finalize()
+            });
+            if let Err(e) = res {
+                eprintln!("haru: dump {}: {e}", path.display());
+            }
+        }
+        let rows = self.rows.lock().unwrap_or_else(|e| e.into_inner());
+        let mut csv = rows.join("\n");
+        csv.push('\n');
+        if let Err(e) = std::fs::write(self.dir.join("frames.csv"), csv) {
+            eprintln!("haru: dump frames.csv: {e}");
+        }
+        eprintln!("haru: conversation dump written to {}", self.dir.display());
+    }
 }
 
 /// Output-rate index of each of the 8 model blocks of one frame (`start + round(i*400*rate/24000)`).
@@ -97,31 +302,64 @@ pub fn flush_padding(buffered: u64, prebuffer: u64, gate_playing: bool, idle: Du
     }
 }
 
+/// The pieces of the virtual acoustic loop while the conversation is being set up.
+struct VirtualDevice {
+    ring_p: Option<rtrb::Producer<f32>>,
+    ring_c: Option<rtrb::Consumer<f32>>,
+    tap_p: Option<rtrb::Producer<f32>>,
+    tap_c: Option<rtrb::Consumer<f32>>,
+    shared: Arc<PlaybackShared>,
+    room: Arc<Mutex<Room>>,
+}
+
 /// Where Haru's audio goes: the real device queue or a virtual real-time consumer.
 struct Out {
     rate: u32,
     shared: Arc<PlaybackShared>,
     pushed: Arc<AtomicU64>,
     real: Option<PlaybackHandle>,
+    /// Virtual acoustic loop: the ring the virtual device consumes (instead of just counting).
+    vring: Option<rtrb::Producer<f32>>,
+    /// Test seam: every sample pushed to the playback ring.
+    #[cfg(test)]
+    tap: Option<Arc<Mutex<Vec<f32>>>>,
 }
 
 impl Out {
     fn push(&mut self, s: &[f32]) -> u64 {
+        #[cfg(test)]
+        if let Some(t) = &self.tap {
+            t.lock().unwrap().extend_from_slice(s);
+        }
         match &mut self.real {
             Some(h) => {
                 let start = h.push(s);
                 self.pushed.store(h.pushed(), Ordering::Release);
                 start
             }
-            None => self.pushed.fetch_add(s.len() as u64, Ordering::AcqRel),
+            None => match &mut self.vring {
+                Some(r) => {
+                    let mut n = 0u64;
+                    for &x in s {
+                        if r.push(x).is_err() {
+                            break;
+                        }
+                        n += 1;
+                    }
+                    self.pushed.fetch_add(n, Ordering::AcqRel)
+                }
+                None => self.pushed.fetch_add(s.len() as u64, Ordering::AcqRel),
+            },
         }
     }
 }
 
 /// Echo cancellation needs the real speaker output as reference and the real microphone: not with the virtual
-/// (no-playback) sink or a WAV feeder.
+/// (no-playback) sink or a WAV feeder, unless the virtual acoustic loop (`virtual_echo`) provides both.
 pub fn wants_echo_cancellation(s: &Settings, io: &ConversationIo) -> bool {
-    s.echo_cancellation && !io.no_playback && io.input_samples.is_none()
+    let real = !io.no_playback && io.input_samples.is_none();
+    let virtual_loop = io.no_playback && io.input_samples.is_some() && io.virtual_echo.is_some();
+    s.echo_cancellation && (real || virtual_loop)
 }
 
 fn new_shared_playback() -> Arc<PlaybackShared> {
@@ -152,6 +390,44 @@ fn spawn_virtual_player(rate: u32, shared: Arc<PlaybackShared>, pushed: Arc<Atom
         .expect("spawn virtual player")
 }
 
+/// Virtual loudspeaker of the acoustic loop: behaves like the real output callback (`render_block`: jitter gate,
+/// silence when nothing is playable, every value also to the AEC render tap) and hands exactly what a device would
+/// play to the room simulation.
+fn spawn_virtual_device(
+    rate: u32,
+    shared: Arc<PlaybackShared>,
+    mut consumer: rtrb::Consumer<f32>,
+    mut tap: Option<rtrb::Producer<f32>>,
+    room: Arc<Mutex<Room>>,
+    stop: Arc<Inner>,
+) -> JoinHandle<()> {
+    thread::Builder::new()
+        .name("haru-virtual-out".into())
+        .spawn(move || {
+            let mut gate = JitterGate::new(prebuffer_samples(rate) as usize);
+            let t0 = room.lock().unwrap_or_else(|e| e.into_inner()).t0();
+            let mut done = 0u64;
+            while !stop.stop.load(Ordering::Acquire) {
+                let due = (t0.elapsed().as_secs_f64() * rate as f64) as u64;
+                let need = due - done;
+                if need >= (rate / 100) as u64 {
+                    let mut block = Vec::with_capacity(need as usize);
+                    let (n, dropped) = render_block(&mut gate, &mut consumer, tap.as_mut(), need as usize, |_, v| block.push(v));
+                    shared.played.fetch_add(n as u64, Ordering::Relaxed);
+                    if dropped > 0 {
+                        shared.tap_dropped.fetch_add(dropped, Ordering::Relaxed);
+                    }
+                    shared.underruns.store(gate.underruns, Ordering::Relaxed);
+                    shared.playing.store(n > 0, Ordering::Relaxed);
+                    room.lock().unwrap_or_else(|e| e.into_inner()).push_played(&block);
+                    done += need;
+                }
+                thread::sleep(Duration::from_millis(2));
+            }
+        })
+        .expect("spawn virtual device")
+}
+
 struct Inner {
     /// Stable key of the conversation (`Conversation::id`); worker request ids derive from it.
     id: String,
@@ -170,6 +446,7 @@ struct Inner {
     timeline: Mutex<FrameTimeline>,
     clock: Mutex<FeatureClock>,
     mic: Arc<MicShared>,
+    dump: Option<Arc<Dump>>,
     mic_rate: u32,
     on_end: Arc<dyn Fn(ConversationEnd) + Send + Sync>,
 }
@@ -243,7 +520,7 @@ pub struct Conversation {
     engine: Option<AudioEngine>,
     threads: Vec<JoinHandle<()>>,
     lag_limit_secs: f64,
-    startup_warning: Option<String>,
+    startup_warning: Option<UiText>,
 }
 
 fn dispatch_loop(
@@ -251,6 +528,8 @@ fn dispatch_loop(
     events: Receiver<WorkerMsg>,
     mut out: Out,
     first_tx: mpsc::Sender<Result<(), HaruError>>,
+    mut voice: VoiceFx,
+    taps: (Option<SampleTap>, Option<SampleTap>),
 ) {
     let mut resampler = match FrameResampler::new(24000, out.rate, FRAME_SAMPLES) {
         Ok(r) => r,
@@ -272,7 +551,7 @@ fn dispatch_loop(
     let mut ended = false;
     let mut last_push = Instant::now();
     let lost = |d: &str| {
-        HaruError::new(ErrorCode::Worker, "Die Verbindung zum Sprachmodell-Worker ist abgebrochen.")
+        HaruError::new(ErrorCode::Worker, MsgKey::WorkerConnectionLost)
             .with_detail(d.to_string())
             .backend_failure()
     };
@@ -294,10 +573,10 @@ fn dispatch_loop(
         let wait = if got_first { TICK * 3 } else { first_deadline.saturating_duration_since(Instant::now()).min(Duration::from_millis(50)) };
         match events.recv_timeout(wait) {
             Ok(WorkerMsg::Chunk { id, seq, pcm, text }) if id == rid => {
-                let pcm = match decode_f32(&pcm) {
+                let mut pcm = match decode_f32(&pcm) {
                     Ok(p) if p.len() == FRAME_SAMPLES => p,
                     Ok(p) => {
-                        fail!(HaruError::new(ErrorCode::Worker, "Der Worker lieferte ein ungültiges Audio-Frame.")
+                        fail!(HaruError::new(ErrorCode::Worker, MsgKey::WorkerBadFrame)
                             .with_detail(format!("frame {seq} has {} samples", p.len()))
                             .backend_failure());
                         continue;
@@ -307,7 +586,21 @@ fn dispatch_loop(
                         continue;
                     }
                 };
+                // Voice effect on the 24 kHz frame: playback ring, echo reference and lipsync all see it.
+                if let Some(d) = &inner.dump {
+                    d.model_frame(seq_base + seq, &pcm, text.as_deref());
+                }
+                if let Some(t) = &taps.0 {
+                    t.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(&pcm);
+                }
+                voice.process_in_place(&mut pcm);
+                if let Some(t) = &taps.1 {
+                    t.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(&pcm);
+                }
                 let resampled = resampler.process(&pcm);
+                if let Some(d) = &inner.dump {
+                    d.model_out(&resampled);
+                }
                 let start = out.push(&resampled);
                 inner.timeline.lock().unwrap_or_else(|e| e.into_inner()).push(seq_base + seq, text.unwrap_or_default(), start);
                 next_seq = next_seq.max(seq_base + seq + 1);
@@ -343,7 +636,7 @@ fn dispatch_loop(
                     let e = if inner.lag_cancelled.load(Ordering::Acquire) {
                         lag_error(None)
                     } else {
-                        HaruError::new(ErrorCode::Worker, "Das Gespräch wurde abgebrochen.").backend_failure()
+                        HaruError::new(ErrorCode::Worker, MsgKey::ConversationAborted).backend_failure()
                     };
                     inner.fire_end(ConversationEnd::Failed(e));
                 }
@@ -387,7 +680,7 @@ fn dispatch_loop(
                     let _ = inner.send_to_current(|id| ClientMsg::Cancel { id });
                     let _ = first_tx.send(Err(HaruError::new(
                         ErrorCode::Worker,
-                        "Der Sprachmodell-Worker antwortet nicht.",
+                        MsgKey::WorkerNoAnswer,
                     )
                     .with_detail("no frame 0 within 30 s")
                     .backend_failure()));
@@ -404,7 +697,7 @@ fn dispatch_loop(
         }
         if got_first && !seg_first && !ended && Instant::now() >= seg_deadline {
             let _ = inner.send_to_current(|id| ClientMsg::Cancel { id });
-            fail!(HaruError::new(ErrorCode::Worker, "Der Sprachmodell-Worker antwortet nicht.")
+            fail!(HaruError::new(ErrorCode::Worker, MsgKey::WorkerNoAnswer)
                 .with_detail("no frame 0 of the next segment within 30 s")
                 .backend_failure());
         }
@@ -417,11 +710,10 @@ fn dispatch_loop(
 }
 
 fn lag_error(backlog: Option<f64>) -> HaruError {
-    let msg = match backlog {
-        Some(b) => format!("Haru kommt nicht hinterher (Rückstand {b:.1} s). Die GPU ist zu langsam oder ausgelastet."),
-        None => "Haru kommt nicht hinterher. Die GPU ist zu langsam oder ausgelastet.".to_string(),
-    };
-    HaruError::new(ErrorCode::LagLimit, msg)
+    match backlog {
+        Some(b) => HaruError::new(ErrorCode::LagLimit, MsgKey::LagLimitBacklog).with_param("backlog", b),
+        None => HaruError::new(ErrorCode::LagLimit, MsgKey::LagLimit),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -442,7 +734,7 @@ fn ticker_loop(
             let _ = inner.send_to_current(|id| ClientMsg::Cancel { id });
             inner.fire_end(ConversationEnd::Failed(HaruError::new(
                 ErrorCode::AudioDevice,
-                "Audiogerät nicht mehr verfügbar.",
+                MsgKey::AudioDeviceLost,
             )));
         }
         let played = shared.played.load(Ordering::Relaxed);
@@ -457,6 +749,9 @@ fn ticker_loop(
             buffered,
             out_rate,
         );
+        if let Some(d) = &inner.dump {
+            d.set_backlog(backlog);
+        }
         if !inner.has_terminal() {
             on_viz(build_frame(played as f64 / out_rate as f64, model, mic, backlog * 1000.0, words));
             if !inner.end_fired.load(Ordering::Acquire) && classify(backlog, lag_limit) == LagLevel::Exceeded {
@@ -483,13 +778,18 @@ impl Conversation {
         muted: bool,
         on_viz: VizSink,
         on_end: Arc<dyn Fn(ConversationEnd) + Send + Sync>,
-        on_warning: Arc<dyn Fn(String) + Send + Sync>,
+        on_warning: Arc<dyn Fn(UiText) + Send + Sync>,
         id: String,
         io: &ConversationIo,
+        voice: VoiceStyle,
     ) -> Result<Conversation, HaruError> {
         // 1. Audio.
         let virtual_both = io.no_playback && io.input_samples.is_some();
         let want_aec = wants_echo_cancellation(settings, io);
+        let echo_sim = io.virtual_echo.clone().filter(|_| virtual_both);
+        if io.virtual_echo.is_some() && echo_sim.is_none() {
+            eprintln!("haru: virtual echo ignored (needs no_playback and a WAV input)");
+        }
         let (engine, cap, mut play) = if virtual_both {
             (None, None, None)
         } else {
@@ -497,7 +797,8 @@ impl Conversation {
             (Some(e), Some(c), Some(p))
         };
 
-        let mic = Arc::new(MicShared::default());
+        let dump = Dump::from_env(&id);
+        let mic = Arc::new(MicShared { dump: dump.clone(), ..Default::default() });
         *mic.request_id.lock().unwrap_or_else(|e| e.into_inner()) = id.clone();
         mic.muted.store(muted, Ordering::Relaxed);
         let mut feeder: Option<(Vec<f32>, u32, rtrb::Producer<f32>)> = None;
@@ -518,18 +819,46 @@ impl Conversation {
         let mic_rate = capture.rate;
         let capture_failed = capture.failed.clone();
 
+        // Virtual acoustic loop: ring + (render tap) + room between the virtual player and the feeder.
+        let mut vdev: Option<VirtualDevice> = None;
+        if let Some(sim) = echo_sim {
+            let (ring_p, ring_c) = rtrb::RingBuffer::new(VIRTUAL_RATE as usize * 4);
+            let (tap_p, tap_c) = if want_aec {
+                let (p, c) = rtrb::RingBuffer::new(VIRTUAL_RATE as usize * 2);
+                (Some(p), Some(c))
+            } else {
+                (None, None)
+            };
+            let shared = new_shared_playback();
+            // What a device reports through its callback timestamps: the output latency.
+            store_latency(&shared.output_latency_us, Some(Duration::from_secs_f64(sim.device_latency_ms.max(0.0) as f64 / 1000.0)));
+            let room = Room::new(sim.clone(), VIRTUAL_RATE, mic_rate)?;
+            eprintln!(
+                "haru: virtual acoustic loop: {sim:?}; total render->mic delay {:.1} ms, output {VIRTUAL_RATE} Hz, capture {mic_rate} Hz, AEC {}",
+                sim.delay_ms + sim.device_latency_ms,
+                if want_aec { "on" } else { "off" }
+            );
+            vdev = Some(VirtualDevice { ring_p: Some(ring_p), ring_c: Some(ring_c), tap_p, tap_c, shared, room: Arc::new(Mutex::new(room)) });
+        }
+
         // Echo cancellation: reference = render tap of the real output, processed on the mic pump thread.
         let mut startup_warning = None;
         let echo = if want_aec {
-            let p = play.as_mut().expect("real playback when echo cancellation is wanted");
-            match (p.render_tap.take(), VoiceProcessor::new(mic_rate, p.rate, Stages::Full)) {
+            let (tap, play_rate, play_shared) = match vdev.as_mut() {
+                Some(v) => (v.tap_c.take(), VIRTUAL_RATE, v.shared.clone()),
+                None => {
+                    let p = play.as_mut().expect("real playback when echo cancellation is wanted");
+                    (p.render_tap.take(), p.rate, p.shared.clone())
+                }
+            };
+            match (tap, VoiceProcessor::new(mic_rate, play_rate, Stages::Full)) {
                 (Some(tap), Ok(vp)) => {
-                    eprintln!("haru: echo cancellation on (capture {mic_rate} Hz, output {} Hz)", p.rate);
-                    Some(EchoInput::new(vp, tap, p.shared.clone(), on_warning.clone()))
+                    eprintln!("haru: echo cancellation on (capture {mic_rate} Hz, output {play_rate} Hz)");
+                    Some(EchoInput::new(vp, tap, play_shared, on_warning.clone()))
                 }
                 (_, r) => {
                     eprintln!("haru: echo cancellation unavailable: {}", r.err().map_or("no render tap".into(), |e| e.to_string()));
-                    startup_warning = Some(AEC_UNAVAILABLE_WARNING.to_string());
+                    startup_warning = Some(UiText::new(MsgKey::AecUnavailable));
                     None
                 }
             }
@@ -553,22 +882,64 @@ impl Conversation {
             timeline: Mutex::new(FrameTimeline::new()),
             clock: Mutex::new(FeatureClock::new(1)), // replaced below once the output rate is known
             mic: mic.clone(),
+            dump: dump.clone(),
             mic_rate,
             on_end,
         });
 
         let mut threads: Vec<JoinHandle<()>> = Vec::new();
-        let out = if io.no_playback {
+        let mut feeder_room: Option<Arc<Mutex<Room>>> = None;
+        let out = if let Some(v) = vdev.as_mut() {
+            let shared = v.shared.clone();
+            let pushed = Arc::new(AtomicU64::new(0));
+            feeder_room = Some(v.room.clone());
+            threads.push(spawn_virtual_device(
+                VIRTUAL_RATE,
+                shared.clone(),
+                v.ring_c.take().expect("virtual ring consumer"),
+                v.tap_p.take(),
+                v.room.clone(),
+                inner_probe.clone(),
+            ));
+            Out {
+                rate: VIRTUAL_RATE,
+                shared,
+                pushed,
+                real: None,
+                vring: v.ring_p.take(),
+                #[cfg(test)]
+                tap: io.push_tap.clone(),
+            }
+        } else if io.no_playback {
             let rate = play.as_ref().map(|p| p.rate).unwrap_or(VIRTUAL_RATE);
             let shared = new_shared_playback();
             let pushed = Arc::new(AtomicU64::new(0));
             threads.push(spawn_virtual_player(rate, shared.clone(), pushed.clone(), inner_probe.clone()));
-            Out { rate, shared, pushed, real: None }
+            Out {
+                rate,
+                shared,
+                pushed,
+                real: None,
+                vring: None,
+                #[cfg(test)]
+                tap: io.push_tap.clone(),
+            }
         } else {
             let p = play.expect("playback present");
-            Out { rate: p.rate, shared: p.shared.clone(), pushed: Arc::new(AtomicU64::new(0)), real: Some(p) }
+            Out {
+                rate: p.rate,
+                shared: p.shared.clone(),
+                pushed: Arc::new(AtomicU64::new(0)),
+                real: Some(p),
+                vring: None,
+                #[cfg(test)]
+                tap: io.push_tap.clone(),
+            }
         };
         let out_rate = out.rate;
+        if let Some(d) = &dump {
+            d.set_rates(mic_rate, out_rate);
+        }
         *inner_probe.clock.lock().unwrap() = FeatureClock::new(block_len_out(out_rate));
         let inner = inner_probe;
         let out_shared = out.shared.clone();
@@ -596,23 +967,25 @@ impl Conversation {
         let on_fatal: Arc<dyn Fn(HaruError) + Send + Sync> = Arc::new(move |e| fatal_inner.fire_end(ConversationEnd::Failed(e)));
         threads.push(spawn_mic_pump(capture, sender.clone(), mic.clone(), on_fatal, echo));
         if let Some((samples, rate, producer)) = feeder {
-            threads.push(spawn_sample_feeder(samples, rate, producer, mic.clone()));
+            threads.push(spawn_sample_feeder_with_room(samples, rate, producer, mic.clone(), feeder_room));
         }
 
-        // 4. Dispatch thread, wait for frame 0.
+        // 4. Dispatch thread, wait for frame 0. One voice processor per conversation (survives segment renewals).
         let (first_tx, first_rx) = mpsc::channel();
+        let voice = VoiceFx::new(effective_style(voice));
+        let taps = (io.model_tap.clone(), io.fx_tap.clone());
         {
             let inner = inner.clone();
             threads.push(
                 thread::Builder::new()
                     .name("haru-dispatch".into())
-                    .spawn(move || dispatch_loop(inner, events, out, first_tx))
+                    .spawn(move || dispatch_loop(inner, events, out, first_tx, voice, taps))
                     .expect("spawn dispatch thread"),
             );
         }
         let first = first_rx
             .recv_timeout(FIRST_FRAME_TIMEOUT + Duration::from_secs(5))
-            .unwrap_or_else(|_| Err(HaruError::new(ErrorCode::Worker, "Der Sprachmodell-Worker antwortet nicht.").backend_failure()));
+            .unwrap_or_else(|_| Err(HaruError::new(ErrorCode::Worker, MsgKey::WorkerNoAnswer).backend_failure()));
         if let Err(e) = first {
             let _ = sender.send(&ClientMsg::Cancel { id: id.clone() });
             abort(&inner, threads);
@@ -642,7 +1015,7 @@ impl Conversation {
     }
 
     /// Warning for the UI when the conversation started without a feature it was supposed to have.
-    pub fn startup_warning(&self) -> Option<String> {
+    pub fn startup_warning(&self) -> Option<UiText> {
         self.startup_warning.clone()
     }
 
@@ -653,7 +1026,7 @@ impl Conversation {
     /// Sends `hang_up`, waits up to `timeout` for `end`, otherwise cancels; then stops threads and audio.
     pub fn hang_up(mut self, timeout: Duration) -> Result<(), HaruError> {
         let stuck = || {
-            HaruError::new(ErrorCode::Worker, "Der Sprachmodell-Worker reagiert nicht mehr.")
+            HaruError::new(ErrorCode::Worker, MsgKey::WorkerUnresponsive)
                 .with_detail("no end/cancelled after hang_up")
                 .backend_failure()
         };
@@ -691,7 +1064,7 @@ impl Conversation {
                 Err(_) => true,
             };
             if stuck {
-                result = Err(HaruError::new(ErrorCode::Worker, "Der Sprachmodell-Worker reagiert nicht mehr.")
+                result = Err(HaruError::new(ErrorCode::Worker, MsgKey::WorkerUnresponsive)
                     .with_detail("no cancelled after cancel")
                     .backend_failure());
             }
@@ -711,6 +1084,9 @@ impl Conversation {
         }
         if let Some(e) = self.engine.take() {
             e.stop();
+        }
+        if let Some(d) = &self.inner.dump {
+            d.finish();
         }
     }
 }
@@ -843,7 +1219,7 @@ mod tests {
     }
 
     fn test_io() -> ConversationIo {
-        ConversationIo { input_samples: Some((16000, vec![0.0; 16000])), no_playback: true }
+        ConversationIo { input_samples: Some((16000, vec![0.0; 16000])), no_playback: true, ..Default::default() }
     }
 
     /// Next written line matching `pred` (other lines are skipped), within 5 s.
@@ -874,6 +1250,11 @@ mod tests {
         assert!(!wants_echo_cancellation(&on, &ConversationIo { no_playback: true, ..Default::default() }));
         assert!(!wants_echo_cancellation(&on, &ConversationIo { input_samples: Some((16000, vec![0.0])), ..Default::default() }));
         assert!(!wants_echo_cancellation(&off, &ConversationIo::default()));
+        // The virtual acoustic loop provides reference and microphone itself.
+        let looped = ConversationIo { input_samples: Some((16000, vec![0.0])), no_playback: true, virtual_echo: Some(EchoSim::default()), ..Default::default() };
+        assert!(wants_echo_cancellation(&on, &looped));
+        assert!(!wants_echo_cancellation(&off, &looped));
+        assert!(!wants_echo_cancellation(&on, &ConversationIo { no_playback: false, ..looped.clone() }));
     }
 
     #[test]
@@ -904,6 +1285,7 @@ mod tests {
             Arc::new(|_| {}),
             "c1".into(),
             &test_io(),
+            VoiceStyle::Natural,
         )
         .expect("start");
         let first = next_line(&fx.lines, |v| is(v, "dialogue", "c1"));
@@ -962,6 +1344,7 @@ mod tests {
             Arc::new(|_| {}),
             "c1".into(),
             &test_io(),
+            VoiceStyle::Natural,
         )
         .expect("start");
         next_line(&fx.lines, |v| is(v, "chunk", "c1"));
@@ -981,5 +1364,97 @@ mod tests {
             written.iter().all(|v| v["type"] == "chunk"),
             "no hang_up, cancel or dialogue line may follow the limit: {written:?}"
         );
+    }
+
+    #[test]
+    fn daemon_persona_reaches_the_worker_dialogue_and_renewals() {
+        use crate::cards::{self, Persona};
+        let fx = fixture();
+        fx.worker.send(frame("c1", 0)).unwrap();
+        let settings = Settings { lag_limit_secs: 10.0, ..Default::default() };
+        let mut options = settings.dialogue_options(Persona::Daemon);
+        options.max_seconds = Some(5.0);
+        let renewal = Renewal { max_seconds: Arc::new(|| 42.0), on_renewed: Arc::new(|_| {}) };
+        let on_end: Arc<dyn Fn(ConversationEnd) + Send + Sync> = Arc::new(|_| {});
+        let conv = Conversation::start_with(
+            fx.sender.clone(),
+            fx.events,
+            &settings,
+            options,
+            Some(renewal),
+            false,
+            Arc::new(|_| {}),
+            on_end,
+            Arc::new(|_| {}),
+            "c1".into(),
+            &test_io(),
+            VoiceStyle::Natural,
+        )
+        .expect("start");
+        let daemon = cards::card(Persona::Daemon, "de");
+        let first = next_line(&fx.lines, |v| is(v, "dialogue", "c1"));
+        assert_eq!(first["persona"], daemon.persona.as_str());
+        assert_eq!(first["backchannel"], "low");
+        fx.worker.send(segment_limit("c1")).unwrap();
+        let next = next_line(&fx.lines, |v| is(v, "dialogue", "c1-s2"));
+        assert_eq!(next["persona"], daemon.persona.as_str(), "a renewed segment keeps the persona");
+        let t = thread::spawn(move || conv.hang_up(Duration::from_secs(3)));
+        next_line(&fx.lines, |v| is(v, "hang_up", "c1-s2"));
+        fx.worker.send(WorkerMsg::End { id: "c1-s2".into(), frames: None, samples: None }).unwrap();
+        assert!(t.join().unwrap().is_ok());
+    }
+
+    /// Runs one conversation with a fake worker that sends `frames` sine frames; returns what reached the playback ring.
+    fn pushed_samples(style: VoiceStyle, input: &[f32]) -> Vec<f32> {
+        let fx = fixture();
+        let tap = Arc::new(Mutex::new(Vec::new()));
+        for seq in 0..2u64 {
+            let pcm = input[seq as usize * FRAME_SAMPLES..(seq as usize + 1) * FRAME_SAMPLES].to_vec();
+            fx.worker.send(WorkerMsg::Chunk { id: "c1".into(), seq, pcm: encode_f32(&pcm), text: Some("x".into()) }).unwrap();
+        }
+        let settings = Settings { lag_limit_secs: 10.0, ..Default::default() };
+        let io = ConversationIo { push_tap: Some(tap.clone()), ..test_io() };
+        let on_end: Arc<dyn Fn(ConversationEnd) + Send + Sync> = Arc::new(|_| {});
+        let conv = Conversation::start_with(
+            fx.sender.clone(),
+            fx.events,
+            &settings,
+            base_options(),
+            None,
+            false,
+            Arc::new(|_| {}),
+            on_end,
+            Arc::new(|_| {}),
+            "c1".into(),
+            &io,
+            style,
+        )
+        .expect("start");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while tap.lock().unwrap().len() < 2 * FRAME_SAMPLES * 2 && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        drop(conv);
+        let v = tap.lock().unwrap().clone();
+        v
+    }
+
+    #[test]
+    fn demon_voice_changes_the_pushed_playback_samples_natural_keeps_them() {
+        let input: Vec<f32> = (0..2 * FRAME_SAMPLES).map(|i| 0.3 * (2.0 * std::f32::consts::PI * 200.0 * i as f32 / 24000.0).sin()).collect();
+        let input = decode_f32(&encode_f32(&input)).unwrap(); // the wire format may quantise
+        // Expected natural result: the same frames through the same resampler (48 kHz virtual sink).
+        let mut rs = FrameResampler::new(24000, VIRTUAL_RATE, FRAME_SAMPLES).unwrap();
+        let mut expected = rs.process(&input[..FRAME_SAMPLES]);
+        expected.extend(rs.process(&input[FRAME_SAMPLES..]));
+        let natural = pushed_samples(VoiceStyle::Natural, &input);
+        let demon = pushed_samples(VoiceStyle::Demon, &input);
+        // The sink may append tail padding after the two frames; compare the frames themselves.
+        let n = expected.len();
+        assert!(natural.len() >= n && demon.len() >= n, "pushed {} / {} of {n}", natural.len(), demon.len());
+        let maxdiff = natural[..n].iter().zip(&expected).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+        let first = natural[..n].iter().zip(&expected).position(|(a, b)| a != b);
+        assert!(maxdiff == 0.0, "natural differs: max {maxdiff}, first at {first:?}, n {n}, len {}", natural.len());
+        assert_ne!(&demon[..n], &expected[..], "demon must alter the playback samples");
     }
 }
