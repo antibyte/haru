@@ -41,9 +41,26 @@ Screenshots:
 
 ## Installation
 
-Die fertige Installationsdatei kommt aus dem CI-Lauf: Im GitHub-Actions-Lauf des Workflows `build` liegt das Artefakt `haru-windows-x64-nsis`. Enthalten ist `Haru_0.1.0_x64-setup.exe`. Der Installer legt die Backend-Varianten unter `backends\` im Installationsordner ab.
+Die fertigen Installationsdateien liegen unter [GitHub Releases](https://github.com/antibyte/haru/releases): `Haru_<version>_x64-setup.exe` für Windows, `Haru_<version>_amd64.AppImage` und `Haru_<version>_amd64.deb` für Linux, `Haru_<version>_aarch64.dmg` für macOS mit Apple Silicon (siehe [Releases](#releases)). Der Windows-Installer legt die Backend-Varianten unter `backends\` im Installationsordner ab. Die Dateien sind nicht signiert; wie man an SmartScreen, Gatekeeper und dem fehlenden Ausführungsrecht des AppImage vorbeikommt, steht im Text des Releases. Einen Zwischenstand ohne Release liefert jeder Lauf des Workflows `build` als Artefakt `haru-windows-x64-nsis`.
 
 Alternativ selbst bauen, siehe [Aus dem Quellcode bauen](#aus-dem-quellcode-bauen).
+
+## Releases
+
+Die Installer eines Releases baut der Workflow `.github/workflows/release.yml`, sobald ein Tag `v*` gepusht wird: Windows x64 (NSIS, Vulkan und CUDA), Linux x64 (AppImage und deb, Vulkan und CPU, gebaut unter Ubuntu 22.04) und macOS Apple Silicon (dmg, Metal, ad hoc signiert, nicht notarisiert). Der letzte Job prüft, dass das Tag zur `version` in `app/src-tauri/tauri.conf.json` passt, und veröffentlicht das Release „Haru <version>“ mit allen Installern, einer Datei mit SHA256-Prüfsummen, dem Text aus `.github/release-notes.md` und den von GitHub erzeugten Änderungen. Über „Run workflow“ (`workflow_dispatch`) baut derselbe Workflow alle Installer nur als Artefakte, ohne Release.
+
+Ein Release erstellen:
+
+1. Version erhöhen, an drei Stellen gleich: `version` in `app/src-tauri/tauri.conf.json`, `version` in `app/src-tauri/Cargo.toml` (danach einmal `cargo check --manifest-path app/src-tauri/Cargo.toml`, das aktualisiert `Cargo.lock`) und in `app/package.json` (`npm --prefix app version 0.2.0 --no-git-tag-version` ändert auch `package-lock.json`).
+2. Die Änderung committen und auf `main` pushen.
+3. Tag setzen und pushen:
+
+   ```powershell
+   git tag v0.2.0
+   git push origin v0.2.0
+   ```
+
+Passt das Tag nicht zur Version in `tauri.conf.json`, bricht der Workflow sofort ab, bevor etwas gebaut wird.
 
 ## Erster Start
 
@@ -363,8 +380,8 @@ Gelesen in `app/src-tauri/src/test_hooks.rs`. Ohne diese Variablen verhält sich
 
 ## Portierung
 
-- **Linux:** `bash scripts/build-backends.sh vulkan` (Standard ist `vulkan cpu`). Die CUDA-Probe lädt `libcuda.so.1`, der Worker erhält sein Binärverzeichnis in `LD_LIBRARY_PATH`. Der Job `linux` der CI testet und baut die Vulkan-Variante als Portabilitätsprüfung. Ein Installationspaket gibt es nicht.
-- **macOS:** `bash scripts/build-backends.sh metal` (Standard unter Darwin, mit `-DGGML_METAL_EMBED_LIBRARY=ON`). Nicht in der CI gebaut und nicht getestet.
+- **Linux:** `bash scripts/build-backends.sh vulkan` (Standard ist `vulkan cpu`). Die CUDA-Probe lädt `libcuda.so.1`, der Worker erhält sein Binärverzeichnis in `LD_LIBRARY_PATH`. Der Job `linux` der CI testet und baut die Vulkan-Variante als Portabilitätsprüfung. AppImage und deb (Vulkan und CPU) baut der Release-Workflow, siehe [Releases](#releases).
+- **macOS:** `bash scripts/build-backends.sh metal` (Standard unter Darwin, mit `-DGGML_METAL_EMBED_LIBRARY=ON`). Der Release-Workflow baut ein dmg für Apple Silicon (ab macOS 13.3, `bundle.macOS.minimumSystemVersion`); auf echter Hardware nicht getestet.
 
 ## Lizenzen
 

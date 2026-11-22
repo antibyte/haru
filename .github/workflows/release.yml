@@ -1,0 +1,404 @@
+name: release
+
+# A pushed tag v* builds every installer and publishes them as a GitHub release. workflow_dispatch builds the same
+# installers and keeps them as workflow artifacts only (no release), to test the workflow.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One run per tag. A second run of the same tag waits instead of cancelling a release that is half uploaded;
+# manual test runs on the same branch replace each other.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' }}
+
+env:
+  VULKAN_VERSION: 1.4.357.0
+  # Checksum of vulkansdk-linux-x86_64-<VULKAN_VERSION>.tar.xz, the same value speech.cpp's own CI pins.
+  VULKAN_LINUX_SHA256: 0f09bf6a0625e346bf004be70b92907e934a4c76606b323441b2baf3a5a0e66d
+  CUDA_VERSION: 12.6.3
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Reads the version from tauri.conf.json. On a tag it must match, so a wrong tag fails before the long builds start.
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read and check the version
+        id: version
+        run: |
+          version=$(jq -r .version app/src-tauri/tauri.conf.json)
+          if [ -z "$version" ] || [ "$version" = null ]; then
+            echo "::error file=app/src-tauri/tauri.conf.json::tauri.conf.json has no version."
+            exit 1
+          fi
+          cargo_version=$(awk -F'"' '/^version = /{print $2; exit}' app/src-tauri/Cargo.toml)
+          npm_version=$(jq -r .version app/package.json)
+          if [ "$cargo_version" != "$version" ]; then
+            echo "::warning file=app/src-tauri/Cargo.toml::Cargo.toml has version $cargo_version, tauri.conf.json has $version."
+          fi
+          if [ "$npm_version" != "$version" ]; then
+            echo "::warning file=app/package.json::package.json has version $npm_version, tauri.conf.json has $version."
+          fi
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "${GITHUB_REF_NAME#v}" != "$version" ]; then
+            echo "::error file=app/src-tauri/tauri.conf.json::Tag $GITHUB_REF_NAME does not match version $version in tauri.conf.json."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Haru $version"
+
+  # The Windows backends, as in build.yml (same build-dir cache keys, so a tag run reuses what main cached).
+  # In addition the finished backend folder is cached: a hit skips the SDK install and the build.
+  windows-backend:
+    name: windows-backend (${{ matrix.variant }})
+    needs: version
+    runs-on: windows-2025
+    strategy:
+      matrix:
+        variant: [vulkan, cuda]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Name the speech.cpp build
+        id: key
+        shell: pwsh
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          $commit = (git ls-tree HEAD extern/speech.cpp).Split()[2]
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationVersion
+          $script = (Get-FileHash scripts/build-backends.ps1 -Algorithm SHA256).Hash.Substring(0, 12)
+          $sdk = if ($env:VARIANT -eq 'vulkan') { "vk$env:VULKAN_VERSION" } else { "cuda$env:CUDA_VERSION" }
+          Add-Content $env:GITHUB_OUTPUT "key=speech-$env:VARIANT-$commit-$sdk-vs$vs-$script"
+      - uses: actions/cache@v4
+        id: backend
+        with:
+          path: app/src-tauri/backends/${{ matrix.variant }}
+          key: backend-${{ steps.key.outputs.key }}-${{ hashFiles('patches/**') }}
+      - uses: actions/cache@v4
+        if: steps.backend.outputs.cache-hit != 'true'
+        with:
+          path: build/speech-${{ matrix.variant }}
+          key: ${{ steps.key.outputs.key }}-${{ hashFiles('patches/**') }}
+      - name: Install the Vulkan SDK
+        if: matrix.variant == 'vulkan' && steps.backend.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          curl.exe -o $env:RUNNER_TEMP/VulkanSDK-Installer.exe -L "https://sdk.lunarg.com/sdk/download/${env:VULKAN_VERSION}/windows/vulkansdk-windows-X64-${env:VULKAN_VERSION}.exe"
+          & "$env:RUNNER_TEMP\VulkanSDK-Installer.exe" --accept-licenses --default-answer --confirm-command install
+          Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\${env:VULKAN_VERSION}"
+          Add-Content $env:GITHUB_PATH "C:\VulkanSDK\${env:VULKAN_VERSION}\bin"
+      - name: Install the CUDA toolkit
+        if: matrix.variant == 'cuda' && steps.backend.outputs.cache-hit != 'true'
+        uses: Jimver/cuda-toolkit@v0.2.24
+        with:
+          cuda: ${{ env.CUDA_VERSION }}
+          method: network
+          sub-packages: '["nvcc","cudart","cublas","cublas_dev","thrust","visual_studio_integration"]'
+      # No GPU on the runner: the CUDA build only proves that it compiles and links (see build.yml).
+      - name: Build the ${{ matrix.variant }} backend
+        if: steps.backend.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: pwsh scripts/build-backends.ps1 -Variants ${{ matrix.variant }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: backend-${{ matrix.variant }}
+          path: app/src-tauri/backends/${{ matrix.variant }}
+          if-no-files-found: error
+          retention-days: 3
+
+  # Windows x64 NSIS installer. The job id is `bundle` like build.yml's bundle job, so Swatinem/rust-cache shares the
+  # release build cache that build.yml saves on main.
+  bundle:
+    name: windows (nsis)
+    needs: [version, windows-backend]
+    runs-on: windows-2025
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: backend-vulkan
+          path: app/src-tauri/backends/vulkan
+      - uses: actions/download-artifact@v4
+        with:
+          name: backend-cuda
+          path: app/src-tauri/backends/cuda
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: npm --prefix app ci
+      - run: npm --prefix app run tauri build -- --bundles nsis
+      - uses: actions/upload-artifact@v4
+        with:
+          name: haru-${{ env.VERSION }}-windows-x64
+          path: app/src-tauri/target/release/bundle/nsis/*_${{ env.VERSION }}_*-setup.exe
+          if-no-files-found: error
+
+  # Linux x64 AppImage and deb with the Vulkan and CPU backends. Ubuntu 22.04 (glibc 2.35) so that the app and the
+  # backends run on older distributions too; it has webkit2gtk-4.1 for Tauri 2. Its apt has no glslc and too old
+  # Vulkan headers for ggml, so the backends use the LunarG SDK archive like speech.cpp's own Linux release.
+  # Backends and bundles are built in one job: artifacts would drop the executable bit of the backend binaries.
+  linux:
+    name: linux (appimage, deb)
+    needs: version
+    runs-on: ubuntu-22.04
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      # libvulkan1 is the loader the Vulkan backend needs at run time (the build links the SDK's copy).
+      # libfuse2 and file are for the AppImage tools.
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libssl-dev libasound2-dev \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev \
+            patchelf libfuse2 file xz-utils libvulkan1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      # The extra key keeps this release build apart from build.yml's `linux` job (ubuntu-24.04, test build).
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+          key: ubuntu-22.04-release
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Name the speech.cpp build
+        id: key
+        run: |
+          commit=$(git ls-tree HEAD extern/speech.cpp | awk '{print $3}')
+          script=$(sha256sum scripts/build-backends.sh | cut -c1-12)
+          echo "key=speech-$ImageOS-vulkan-cpu-$commit-vk$VULKAN_VERSION-gcc$(gcc -dumpfullversion)-$script" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        id: backends
+        with:
+          path: |
+            app/src-tauri/backends/vulkan
+            app/src-tauri/backends/cpu
+          key: backend-${{ steps.key.outputs.key }}-${{ hashFiles('patches/**') }}
+      - name: Install the Vulkan SDK
+        id: sdk
+        if: steps.backends.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/vulkansdk.tar.xz" "https://sdk.lunarg.com/sdk/download/$VULKAN_VERSION/linux/vulkansdk-linux-x86_64-$VULKAN_VERSION.tar.xz"
+          echo "$VULKAN_LINUX_SHA256  $RUNNER_TEMP/vulkansdk.tar.xz" | sha256sum -c
+          tar -xJf "$RUNNER_TEMP/vulkansdk.tar.xz" -C "$RUNNER_TEMP"
+          echo "dir=$RUNNER_TEMP/$VULKAN_VERSION/x86_64" >> "$GITHUB_OUTPUT"
+      # The SDK keeps its loader in lib/VulkanLoader, where CMake's FindVulkan looks only through the prefix path.
+      # Scoped to this step so that the SDK does not leak into the app build.
+      - name: Build the Vulkan and CPU backends
+        if: steps.backends.outputs.cache-hit != 'true'
+        env:
+          VULKAN_SDK: ${{ steps.sdk.outputs.dir }}
+          CMAKE_PREFIX_PATH: ${{ steps.sdk.outputs.dir }}/lib/VulkanLoader
+        run: |
+          export PATH="$VULKAN_SDK/bin:$PATH"
+          bash scripts/build-backends.sh vulkan cpu
+      - name: Keep the backends executable
+        run: |
+          chmod +x app/src-tauri/backends/vulkan/speech app/src-tauri/backends/cpu/speech
+          ls -l app/src-tauri/backends/*/
+      - run: npm --prefix app ci
+      - run: npm --prefix app run tauri build -- --bundles appimage,deb
+      # Both packages must carry both backends with the executable bit, and the AppImage's copies must start.
+      - name: Check the backends inside the packages
+        run: |
+          bundle=app/src-tauri/target/release/bundle
+          deb=$(ls "$bundle"/deb/*_"$VERSION"_*.deb)
+          appimage=$(ls "$bundle"/appimage/*_"$VERSION"_*.AppImage)
+          echo "::group::$deb"
+          dpkg-deb --info "$deb"
+          dpkg-deb -c "$deb" | grep backends/
+          echo "::endgroup::"
+          for v in vulkan cpu; do
+            if ! dpkg-deb -c "$deb" | grep -E "^-rwx.* \./usr/lib/.+/backends/$v/speech$" >/dev/null; then
+              echo "::error::$deb has no executable backends/$v/speech."
+              exit 1
+            fi
+          done
+          work="$RUNNER_TEMP/appimage"
+          mkdir -p "$work"
+          cp "$appimage" "$work/Haru.AppImage"
+          chmod +x "$work/Haru.AppImage"
+          (cd "$work" && ./Haru.AppImage --appimage-extract >/dev/null)
+          for v in vulkan cpu; do
+            exe=$(find "$work/squashfs-root" -path "*/backends/$v/speech" -type f -print -quit)
+            if [ -z "$exe" ] || [ ! -x "$exe" ]; then
+              echo "::error::$appimage has no executable backends/$v/speech."
+              exit 1
+            fi
+            ls -l "$exe"
+            "$exe" --version
+          done
+      - name: Collect the packages
+        run: |
+          mkdir -p dist
+          cp app/src-tauri/target/release/bundle/appimage/*_"$VERSION"_*.AppImage dist/
+          cp app/src-tauri/target/release/bundle/deb/*_"$VERSION"_*.deb dist/
+          ls -l dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: haru-${{ env.VERSION }}-linux-x64
+          path: dist/*
+          if-no-files-found: error
+
+  # macOS Apple Silicon dmg with the Metal backend, ad-hoc signed (no Apple identity, no notarization).
+  macos:
+    name: macos (dmg, arm64)
+    needs: version
+    runs-on: macos-15
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      # The backend is built for the app's oldest macOS; without a deployment target clang targets the runner's macOS.
+      # Tauri sets the same variable for cargo from bundle.macOS.minimumSystemVersion.
+      - name: Read the minimum macOS version
+        run: |
+          min=$(jq -r '.bundle.macOS.minimumSystemVersion' app/src-tauri/tauri.conf.json)
+          if [ -z "$min" ] || [ "$min" = null ]; then
+            echo "::error file=app/src-tauri/tauri.conf.json::bundle.macOS.minimumSystemVersion is not set."
+            exit 1
+          fi
+          echo "MACOSX_DEPLOYMENT_TARGET=$min" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Name the speech.cpp build
+        id: key
+        run: |
+          commit=$(git ls-tree HEAD extern/speech.cpp | awk '{print $3}')
+          script=$(shasum -a 256 scripts/build-backends.sh | cut -c1-12)
+          xcode=$(xcodebuild -version | awk 'NR==1{print $2}')
+          echo "key=speech-$ImageOS-metal-$commit-macos$MACOSX_DEPLOYMENT_TARGET-xcode$xcode-$script" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        id: backend
+        with:
+          path: app/src-tauri/backends/metal
+          key: backend-${{ steps.key.outputs.key }}-${{ hashFiles('patches/**') }}
+      - name: Build the Metal backend
+        if: steps.backend.outputs.cache-hit != 'true'
+        run: bash scripts/build-backends.sh metal
+      - name: Check the Metal backend
+        run: |
+          exe=app/src-tauri/backends/metal/speech
+          chmod +x "$exe"
+          codesign --force --sign - "$exe"
+          minos=$(otool -l "$exe" | awk '/LC_BUILD_VERSION/{found=1} found && $1=="minos" && !done {print $2; done=1}')
+          echo "speech: minos $minos"
+          if [ "$minos" != "$MACOSX_DEPLOYMENT_TARGET" ]; then
+            echo "::error::speech targets macOS $minos, expected $MACOSX_DEPLOYMENT_TARGET."
+            exit 1
+          fi
+          "$exe" --version
+      - run: npm --prefix app ci
+      - run: npm --prefix app run tauri build -- --bundles dmg
+      # The app in the dmg: microphone usage description, signature, and a backend that starts.
+      - name: Check the app inside the dmg
+        run: |
+          dmg=$(ls app/src-tauri/target/release/bundle/dmg/*_"$VERSION"_*.dmg)
+          mnt="$RUNNER_TEMP/haru-dmg"
+          hdiutil attach -nobrowse -readonly -mountpoint "$mnt" "$dmg"
+          trap 'hdiutil detach "$mnt" -quiet || true' EXIT
+          app="$mnt/Haru.app"
+          mic=$(plutil -extract NSMicrophoneUsageDescription raw "$app/Contents/Info.plist")
+          min=$(plutil -extract LSMinimumSystemVersion raw "$app/Contents/Info.plist")
+          echo "NSMicrophoneUsageDescription: $mic"
+          echo "LSMinimumSystemVersion: $min"
+          codesign --verify --verbose=2 "$app"
+          codesign --display --verbose=2 "$app" 2>&1 | grep -E '^(Identifier|Format|CodeDirectory|Signature|Runtime)' || true
+          codesign --display --entitlements - "$app" || true
+          exe=$(find "$app/Contents/Resources" -path '*/backends/metal/speech' -type f -print -quit)
+          if [ -z "$exe" ] || [ ! -x "$exe" ]; then
+            echo "::error::$dmg has no executable backends/metal/speech."
+            exit 1
+          fi
+          "$exe" --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: haru-${{ env.VERSION }}-macos-arm64
+          path: app/src-tauri/target/release/bundle/dmg/*_${{ env.VERSION }}_*.dmg
+          if-no-files-found: error
+
+  # Only for a pushed tag: publishes all installers as a release "Haru <version>".
+  release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [version, bundle, linux, macos]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the tag against tauri.conf.json
+        run: |
+          conf=$(jq -r .version app/src-tauri/tauri.conf.json)
+          if [ "${GITHUB_REF_NAME#v}" != "$conf" ] || [ "$conf" != "$VERSION" ]; then
+            echo "::error file=app/src-tauri/tauri.conf.json::Tag $GITHUB_REF_NAME does not match version $conf in tauri.conf.json."
+            exit 1
+          fi
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: haru-${{ env.VERSION }}-*
+          path: dist
+          merge-multiple: true
+      - name: Check the installers and write checksums
+        working-directory: dist
+        run: |
+          ls -lR
+          for ext in exe AppImage deb dmg; do
+            n=$(find . -maxdepth 1 -type f -name "*_${VERSION}_*.$ext" | wc -l)
+            if [ "$n" -ne 1 ]; then
+              echo "::error::Expected one Haru_${VERSION}_*.$ext, found $n."
+              exit 1
+            fi
+          done
+          sha256sum -- * > "Haru_${VERSION}_SHA256SUMS.txt"
+          cat "Haru_${VERSION}_SHA256SUMS.txt"
+      - name: Write the release notes
+        run: sed -e '/^<!--.*-->$/d' -e "s/{{VERSION}}/$VERSION/g" .github/release-notes.md > "$RUNNER_TEMP/release-notes.md"
+      # body_path comes first, GitHub's generated notes (changes since the previous tag) are appended.
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Haru ${{ env.VERSION }}
+          body_path: ${{ runner.temp }}/release-notes.md
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+          make_latest: 'true'
+          files: dist/*
+          fail_on_unmatched_files: true
