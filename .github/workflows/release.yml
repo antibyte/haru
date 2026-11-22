@@ -59,10 +59,15 @@ jobs:
   windows-backend:
     name: windows-backend (${{ matrix.variant }})
     needs: version
-    runs-on: windows-2025
+    runs-on: ${{ matrix.runner }}
     strategy:
       matrix:
-        variant: [vulkan, cuda]
+        include:
+          - variant: vulkan
+            runner: windows-2025
+          # CUDA 12.6 cannot integrate with Visual Studio 2026 (on windows-2025), so build it with VS 2022.
+          - variant: cuda
+            runner: windows-2022
     steps:
       - uses: actions/checkout@v4
         with:
