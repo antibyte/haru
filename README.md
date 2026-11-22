@@ -242,7 +242,7 @@ npm --prefix app run tauri dev      # Entwicklungsmodus mit Hot Reload
 npm --prefix app run tauri build -- --bundles nsis
 ```
 
-Der Installer landet in `app\src-tauri\target\release\bundle\nsis\Haru_0.1.0_x64-setup.exe`.
+Der Installer landet in `app\src-tauri\target\release\bundle\nsis\Haru_<version>_x64-setup.exe`.
 
 ### 4. Frontend im Browser (ohne Rust-Kern)
 
