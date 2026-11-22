@@ -5,6 +5,10 @@
 ; speech.cpp tools, so only Haru's own model folder is ever removed.
 ;
 ; Command line flag for scripted/silent uninstalls:  /DELETEMODEL
+;
+; Also clears the "backends" folder of an existing installation before every
+; install, so the standard and the CUDA installer each leave exactly their own
+; backends behind (see NSIS_HOOK_PREINSTALL).
 
 ; Computes the speech.cpp models directory into OUT (mirrors paths.rs
 ; `models_dir_with`): %SPEECH_MODEL_DIR% if set, non-empty and absolute;
@@ -88,5 +92,19 @@
     Pop $R8
     Pop $1
     Pop $0
+  ${EndIf}
+!macroend
+
+; Tauri's uninstaller only deletes files it knows by name, and a reinstall of the
+; same version just copies over. Without this, installing the standard installer
+; over the CUDA one would leave backends\cuda (~600 MB) behind, still used and
+; never uninstalled. Runs before Tauri's own running-app check, so close Haru
+; first: it holds speech.exe and the CUDA DLLs open.
+!macro NSIS_HOOK_PREINSTALL
+  ; Only a folder that already holds Haru: never touch an unrelated "backends" folder.
+  ${If} $INSTDIR != ""
+  ${AndIf} ${FileExists} "$INSTDIR\${MAINBINARYNAME}.exe"
+    !insertmacro CheckIfAppIsRunning "$INSTDIR\${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
+    RMDir /r "$INSTDIR\backends"
   ${EndIf}
 !macroend

@@ -41,13 +41,13 @@ Screenshots:
 
 ## Installation
 
-Die fertigen Installationsdateien liegen unter [GitHub Releases](https://github.com/antibyte/haru/releases): `Haru_<version>_x64-setup.exe` für Windows, `Haru_<version>_amd64.AppImage` und `Haru_<version>_amd64.deb` für Linux, `Haru_<version>_aarch64.dmg` für macOS mit Apple Silicon (siehe [Releases](#releases)). Der Windows-Installer legt die Backend-Varianten unter `backends\` im Installationsordner ab. Die Dateien sind nicht signiert; wie man an SmartScreen, Gatekeeper und dem fehlenden Ausführungsrecht des AppImage vorbeikommt, steht im Text des Releases. Einen Zwischenstand ohne Release liefert jeder Lauf des Workflows `build` als Artefakt `haru-windows-x64-nsis`.
+Die fertigen Installationsdateien liegen unter [GitHub Releases](https://github.com/antibyte/haru/releases): `Haru_<version>_x64-setup.exe` (mit Vulkan) und `Haru_<version>_x64-cuda-setup.exe` (zusätzlich mit CUDA, deutlich größer) für Windows, `Haru_<version>_amd64.AppImage` und `Haru_<version>_amd64.deb` für Linux, `Haru_<version>_aarch64.dmg` für macOS mit Apple Silicon (siehe [Releases](#releases)). Der Windows-Installer legt die Backend-Varianten unter `backends\` im Installationsordner ab. Die Dateien sind nicht signiert; wie man an SmartScreen, Gatekeeper und dem fehlenden Ausführungsrecht des AppImage vorbeikommt, steht im Text des Releases. Einen Zwischenstand ohne Release liefert jeder Lauf des Workflows `build` als Artefakt `haru-windows-x64-nsis`.
 
 Alternativ selbst bauen, siehe [Aus dem Quellcode bauen](#aus-dem-quellcode-bauen).
 
 ## Releases
 
-Die Installer eines Releases baut der Workflow `.github/workflows/release.yml`, sobald ein Tag `v*` gepusht wird: Windows x64 (NSIS, Vulkan und CUDA), Linux x64 (AppImage und deb, Vulkan und CPU, gebaut unter Ubuntu 22.04) und macOS Apple Silicon (dmg, Metal, ad hoc signiert, nicht notarisiert). Der letzte Job prüft, dass das Tag zur `version` in `app/src-tauri/tauri.conf.json` passt, und veröffentlicht das Release „Haru <version>“ mit allen Installern, einer Datei mit SHA256-Prüfsummen, dem Text aus `.github/release-notes.md` und den von GitHub erzeugten Änderungen. Über „Run workflow“ (`workflow_dispatch`) baut derselbe Workflow alle Installer nur als Artefakte, ohne Release.
+Die Installer eines Releases baut der Workflow `.github/workflows/release.yml`, sobald ein Tag `v*` gepusht wird: Windows x64 (zwei NSIS-Installer: `Haru_<version>_x64-setup.exe` mit Vulkan und `Haru_<version>_x64-cuda-setup.exe` mit Vulkan und CUDA), Linux x64 (AppImage und deb, Vulkan und CPU, gebaut unter Ubuntu 22.04) und macOS Apple Silicon (dmg, Metal, ad hoc signiert, nicht notarisiert). Der letzte Job prüft, dass das Tag zur `version` in `app/src-tauri/tauri.conf.json` passt, und veröffentlicht das Release „Haru <version>“ mit allen Installern, einer Datei mit SHA256-Prüfsummen, dem Text aus `.github/release-notes.md` und den von GitHub erzeugten Änderungen. Über „Run workflow“ (`workflow_dispatch`) baut derselbe Workflow alle Installer nur als Artefakte, ohne Release.
 
 Ein Release erstellen:
 
@@ -86,6 +86,8 @@ Gelöscht wird nur der Modellordner von Haru: `%LOCALAPPDATA%\speech.cpp\models\
 Bei einem Update (Deinstallationsprogramm mit `/UPDATE`) wird nie gefragt und das Modell nie gelöscht. Auch stille (`/S`) und passive (`/P`) Deinstallationen fragen nicht; dort wird das Modell nur mit dem Parameter `/DELETEMODEL` entfernt, zum Beispiel `uninstall.exe /S /DELETEMODEL`.
 
 Die Option zum Löschen der Anwendungsdaten im Deinstallationsprogramm ist davon getrennt: Sie entfernt `settings.json` und die Datenordner der App, nicht das Modell.
+
+Der Installer ersetzt den Ordner `backends` einer vorhandenen Installation, damit ein Wechsel zwischen dem normalen und dem CUDA-Installer keine alte Variante zurücklässt.
 
 ## Bedienung
 

@@ -5,9 +5,14 @@
 
 | System | Datei | Backends |
 |---|---|---|
-| Windows 10/11, 64 Bit | `Haru_{{VERSION}}_x64-setup.exe` | Vulkan, CUDA |
+| Windows 10/11, 64 Bit | `Haru_{{VERSION}}_x64-setup.exe` | Vulkan (jede Grafikkarte mit Vulkan 1.3, auch NVIDIA) |
+| Windows 10/11, 64 Bit, NVIDIA | `Haru_{{VERSION}}_x64-cuda-setup.exe` (etwa 370 MB) | CUDA und Vulkan |
 | Linux x64 | `Haru_{{VERSION}}_amd64.AppImage` (ohne Installation) oder `Haru_{{VERSION}}_amd64.deb` (Debian, Ubuntu) | Vulkan, CPU |
 | macOS 13.3 oder neuer, Apple Silicon | `Haru_{{VERSION}}_aarch64.dmg` | Metal |
+
+### Welcher Windows-Installer?
+
+Der normale Installer reicht für jede Grafikkarte, auch für NVIDIA. Der CUDA-Installer bringt zusätzlich NVIDIAs CUDA-Laufzeit (cuBLAS) mit, weil der Grafiktreiber nur die Treiberschnittstelle (`nvcuda.dll`) installiert, nicht diese Bibliotheken. Deshalb ist er viel größer. Auf NVIDIA-Karten kann CUDA schneller sein. Die CUDA-Variante ist noch nicht auf echter NVIDIA-Hardware getestet; schlägt sie fehl, wechselt Haru automatisch zu Vulkan. Beide Installer installieren dieselbe App; wer einen über den anderen installiert, ersetzt die Backends.
 
 ## Voraussetzungen
 

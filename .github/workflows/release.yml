@@ -120,10 +120,13 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
-  # Windows x64 NSIS installer. The job id is `bundle` like build.yml's bundle job, so Swatinem/rust-cache shares the
-  # release build cache that build.yml saves on main.
+  # Windows x64 NSIS installers, both built in this job: the standard one with the Vulkan backend only (~16 MB of
+  # backends) and the CUDA one with Vulkan and CUDA (CUDA brings about 600 MB of runtime DLLs). Tauri bundles whatever
+  # folders exist under backends/ at build time, so the second build runs after the CUDA backend has been added.
+  # The job id is `bundle` like build.yml's bundle job, so Swatinem/rust-cache shares the release build cache that
+  # build.yml saves on main.
   bundle:
-    name: windows (nsis)
+    name: 'windows (nsis: standard, cuda)'
     needs: [version, windows-backend]
     runs-on: windows-2025
     env:
@@ -134,10 +137,6 @@ jobs:
         with:
           name: backend-vulkan
           path: app/src-tauri/backends/vulkan
-      - uses: actions/download-artifact@v4
-        with:
-          name: backend-cuda
-          path: app/src-tauri/backends/cuda
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -149,11 +148,59 @@ jobs:
           workspaces: app/src-tauri
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: npm --prefix app ci
+      # Standard installer: only backends/vulkan exists now.
       - run: npm --prefix app run tauri build -- --bundles nsis
+      # Tauri writes the rendered NSIS script next to the installer; its File lines show what the installer contains.
+      - name: Check and collect the standard installer
+        shell: pwsh
+        run: |
+          $nsi = Get-Content app/src-tauri/target/release/nsis/x64/installer.nsi -Raw
+          if (-not $nsi.Contains('/oname=backends\vulkan\speech.exe')) {
+            Write-Output "::error::The standard installer has no backends\vulkan\speech.exe."
+            exit 1
+          }
+          if ($nsi.Contains('/oname=backends\cuda\')) {
+            Write-Output "::error::The standard installer contains backends\cuda."
+            exit 1
+          }
+          $setup = @(Get-ChildItem "app/src-tauri/target/release/bundle/nsis/*_${env:VERSION}_*-setup.exe")
+          if ($setup.Count -ne 1) {
+            Write-Output "::error::Expected one *_${env:VERSION}_*-setup.exe, found $($setup.Count)."
+            exit 1
+          }
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item $setup[0].FullName "dist/Haru_${env:VERSION}_x64-setup.exe"
+          "{0}: {1:N1} MiB" -f $setup[0].Name, ($setup[0].Length / 1MB)
+      - uses: actions/download-artifact@v4
+        with:
+          name: backend-cuda
+          path: app/src-tauri/backends/cuda
+      # CUDA installer: cargo is incremental, the bundler reads the resource glob again.
+      - run: npm --prefix app run tauri build -- --bundles nsis
+      - name: Check and collect the CUDA installer
+        shell: pwsh
+        run: |
+          $nsi = Get-Content app/src-tauri/target/release/nsis/x64/installer.nsi -Raw
+          foreach ($needle in @('/oname=backends\vulkan\speech.exe', '/oname=backends\cuda\speech.exe', '/oname=backends\cuda\cublasLt64_')) {
+            if (-not $nsi.Contains($needle)) {
+              Write-Output "::error::The CUDA installer has no $needle."
+              exit 1
+            }
+          }
+          $setup = @(Get-ChildItem "app/src-tauri/target/release/bundle/nsis/*_${env:VERSION}_*-setup.exe")
+          if ($setup.Count -ne 1) {
+            Write-Output "::error::Expected one *_${env:VERSION}_*-setup.exe, found $($setup.Count)."
+            exit 1
+          }
+          Copy-Item $setup[0].FullName "dist/Haru_${env:VERSION}_x64-cuda-setup.exe"
+          "{0}: {1:N1} MiB" -f $setup[0].Name, ($setup[0].Length / 1MB)
+      - name: List the installers
+        shell: pwsh
+        run: Get-ChildItem dist | Format-Table Name, Length
       - uses: actions/upload-artifact@v4
         with:
           name: haru-${{ env.VERSION }}-windows-x64
-          path: app/src-tauri/target/release/bundle/nsis/*_${{ env.VERSION }}_*-setup.exe
+          path: dist/*.exe
           if-no-files-found: error
 
   # Linux x64 AppImage and deb with the Vulkan and CPU backends. Ubuntu 22.04 (glibc 2.35) so that the app and the
@@ -384,10 +431,21 @@ jobs:
         working-directory: dist
         run: |
           ls -lR
-          for ext in exe AppImage deb dmg; do
+          for ext in AppImage deb dmg; do
             n=$(find . -maxdepth 1 -type f -name "*_${VERSION}_*.$ext" | wc -l)
             if [ "$n" -ne 1 ]; then
               echo "::error::Expected one Haru_${VERSION}_*.$ext, found $n."
+              exit 1
+            fi
+          done
+          n=$(find . -maxdepth 1 -type f -name '*.exe' | wc -l)
+          if [ "$n" -ne 2 ]; then
+            echo "::error::Expected two Windows installers (*.exe), found $n."
+            exit 1
+          fi
+          for f in "Haru_${VERSION}_x64-setup.exe" "Haru_${VERSION}_x64-cuda-setup.exe"; do
+            if [ ! -f "$f" ]; then
+              echo "::error::Missing $f."
               exit 1
             fi
           done
