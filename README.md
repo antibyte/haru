@@ -1,401 +1,401 @@
-# Haru – Flüssiges Licht
+# Haru – Fluid Light
 
-Eine Desktop-App für ein Gespräch in Echtzeit mit dem Sprachmodell **Haru-4B**. Du sprichst über dein Mikrofon, Haru antwortet mit Stimme, und jedes Wort, das Haru spricht, erscheint als glühende Tinte in einer WebGL2-Fluidsimulation.
+A desktop app for a real-time conversation with the speech model **Haru-4B**. You speak into your microphone, Haru answers with voice, and every word Haru speaks appears as glowing ink in a WebGL2 fluid simulation.
 
-Haru läuft lokal: Die App startet den `speech worker` aus [speech.cpp](https://github.com/nyosegawa/speech.cpp) v0.11.1 als Kindprozess und nutzt die GPU (Vulkan oder CUDA), mit CPU als letzter Option.
+Haru runs locally: the app starts the `speech worker` from [speech.cpp](https://github.com/nyosegawa/speech.cpp) v0.11.1 as a child process and uses the GPU (Vulkan or CUDA), with the CPU as a last resort.
 
-![Haru im Gespräch](docs/screenshots/m3-live-talking.png)
+![Haru in conversation](docs/screenshots/m3-live-talking.png)
 
-## Funktionen
+## Features
 
-- **Full-Duplex-Gespräch:** Du und Haru können gleichzeitig sprechen. Das Mikrofon wird in 20-ms-Blöcken an den Worker geschickt, Harus Antwort läuft fortlaufend ab.
-- **Echounterdrückung:** Über Lautsprecher entfernt Haru die eigene Stimme aus dem Mikrofonsignal (sonora, ein Rust-Port des WebRTC-Audioprozessors: AEC3, Rauschunterdrückung, AGC2, Hochpass). Unterbrechen und Zwischenlaute wie „mhm“ bleiben möglich.
-- **Flüssiges Licht:** Harus Worte werden als Tinte in eine Stable-Fluids-Simulation gespritzt, mit Bloom, God Rays, Flüssigglas-Shading und ACES-Tonemapping.
-- **Audio-Kopplung:** Harus Lautstärke steuert Wirbel und Splats, der spektrale Schwerpunkt den Farbton. Dein Mikrofon malt kühle Splats vom unteren Rand („Haru hört zu").
-- **Automatische Backend-Wahl** (CUDA, Vulkan, CPU) mit Anzeige im HUD, Resumable Modell-Download, adaptive Render-Qualität, optionale Untertitel.
-- **Sprache:** Eine Einstellung steuert Oberfläche und Gespräch. Beim ersten Start übernimmt Haru die Sprache des Betriebssystems, unterstützt werden Deutsch, English, Español, Français, 日本語, 한국어, Português, Русский und 中文 (vereinfacht). Details unter [Sprache](#sprache).
+- **Full-duplex conversation:** You and Haru can speak at the same time. The microphone is sent to the worker in 20 ms blocks, and Haru's reply runs continuously.
+- **Echo cancellation:** When playing through speakers, Haru removes its own voice from the microphone signal (sonora, a Rust port of the WebRTC audio processor: AEC3, noise suppression, AGC2, high-pass filter). Interrupting and short interjections such as "mhm" remain possible.
+- **Fluid Light:** Haru's words are sprayed as ink into a Stable Fluids simulation, with bloom, god rays, liquid-glass shading and ACES tone mapping.
+- **Audio coupling:** Haru's loudness drives swirls and splats, and the spectral centroid drives the hue. Your microphone paints cool splats from the bottom edge while Haru listens.
+- **Automatic backend selection** (CUDA, Vulkan, CPU) with the choice shown in the HUD, resumable model download, adaptive render quality, optional subtitles.
+- **Language:** One setting controls the UI and the conversation. On first start, Haru takes over the operating system's language. Supported are German, English, Español, Français, 日本語, 한국어, Português, Русский and 中文 (Simplified Chinese). Details under [Language](#language).
 
 Screenshots:
 
-| Start | Leerlauf | Gespräch | Japanisch |
+| Start | Idle | Conversation | Japanese |
 |---|---|---|---|
-| ![Boot](docs/screenshots/m2-boot.png) | ![Leerlauf](docs/screenshots/m2-idle.png) | ![Gespräch](docs/screenshots/m2-talking-2.png) | ![Japanisch](docs/screenshots/m2-ja.png) |
+| ![Boot](docs/screenshots/m2-boot.png) | ![Idle](docs/screenshots/m2-idle.png) | ![Conversation](docs/screenshots/m2-talking-2.png) | ![Japanese](docs/screenshots/m2-ja.png) |
 
-## Voraussetzungen
+## Requirements
 
-**Zum Benutzen (Installer):**
+**To use it (installer):**
 
-- Windows 10 oder 11, 64 Bit
-- GPU mit **Vulkan 1.3** oder eine **NVIDIA-GPU mit CUDA** (CUDA-Treiber vorhanden) mit mindestens **8 GB** Grafikspeicher
-- Kopfhörer oder Lautsprecher (Kopfhörer klingen am besten)
-- ca. **7 GB** freier Speicherplatz für das Modell
+- Windows 10 or 11, 64-bit
+- A GPU with **Vulkan 1.3**, or an **NVIDIA GPU with CUDA** (CUDA driver installed), with at least **8 GB** of graphics memory
+- Headphones or speakers (headphones sound best)
+- About **7 GB** of free disk space for the model
 
-**Zum Bauen aus dem Quellcode:**
+**To build from source:**
 
-- Visual Studio 2022 oder neuer mit dem C++-Toolset
+- Visual Studio 2022 or newer with the C++ toolset
 - CMake ≥ 3.20
 - Vulkan SDK
 - Rust (stable)
-- Node.js 20 oder neuer (die CI nutzt Node 24)
-- Für die CUDA-Variante zusätzlich das CUDA Toolkit 12.x (`CUDA_PATH` gesetzt)
+- Node.js 20 or newer (CI uses Node 24)
+- For the CUDA variant, additionally the CUDA Toolkit 12.x (`CUDA_PATH` set)
 
 ## Installation
 
-Die fertigen Installationsdateien liegen unter [GitHub Releases](https://github.com/antibyte/haru/releases): `Haru_<version>_x64-setup.exe` (mit Vulkan) und `Haru_<version>_x64-cuda-setup.exe` (zusätzlich mit CUDA, deutlich größer) für Windows, `Haru_<version>_amd64.AppImage` und `Haru_<version>_amd64.deb` für Linux, `Haru_<version>_aarch64.dmg` für macOS mit Apple Silicon (siehe [Releases](#releases)). Der Windows-Installer legt die Backend-Varianten unter `backends\` im Installationsordner ab. Die Dateien sind nicht signiert; wie man an SmartScreen, Gatekeeper und dem fehlenden Ausführungsrecht des AppImage vorbeikommt, steht im Text des Releases. Einen Zwischenstand ohne Release liefert jeder Lauf des Workflows `build` als Artefakt `haru-windows-x64-nsis`.
+The finished installers are on [GitHub Releases](https://github.com/antibyte/haru/releases): `Haru_<version>_x64-setup.exe` (with Vulkan) and `Haru_<version>_x64-cuda-setup.exe` (additionally with CUDA, significantly larger) for Windows, `Haru_<version>_amd64.AppImage` and `Haru_<version>_amd64.deb` for Linux, and `Haru_<version>_aarch64.dmg` for macOS with Apple Silicon (see [Releases](#releases)). The Windows installer places the backend variants under `backends\` in the installation folder. The files are not signed; the release text explains how to get past SmartScreen and Gatekeeper and how to run the AppImage without execute permission. A build without a release is available from every run of the `build` workflow as the artifact `haru-windows-x64-nsis`.
 
-Alternativ selbst bauen, siehe [Aus dem Quellcode bauen](#aus-dem-quellcode-bauen).
+Alternatively, build it yourself, see [Build from source](#build-from-source).
 
 ## Releases
 
-Die Installer eines Releases baut der Workflow `.github/workflows/release.yml`, sobald ein Tag `v*` gepusht wird: Windows x64 (zwei NSIS-Installer: `Haru_<version>_x64-setup.exe` mit Vulkan und `Haru_<version>_x64-cuda-setup.exe` mit Vulkan und CUDA), Linux x64 (AppImage und deb, Vulkan und CPU, gebaut unter Ubuntu 22.04) und macOS Apple Silicon (dmg, Metal, ad hoc signiert, nicht notarisiert). Der letzte Job prüft, dass das Tag zur `version` in `app/src-tauri/tauri.conf.json` passt, und veröffentlicht das Release „Haru <version>“ mit allen Installern, einer Datei mit SHA256-Prüfsummen, dem Text aus `.github/release-notes.md` und den von GitHub erzeugten Änderungen. Über „Run workflow“ (`workflow_dispatch`) baut derselbe Workflow alle Installer nur als Artefakte, ohne Release.
+The installers for a release are built by the workflow `.github/workflows/release.yml` as soon as a tag `v*` is pushed: Windows x64 (two NSIS installers: `Haru_<version>_x64-setup.exe` with Vulkan, and `Haru_<version>_x64-cuda-setup.exe` with Vulkan and CUDA), Linux x64 (AppImage and deb, Vulkan and CPU, built on Ubuntu 22.04), and macOS Apple Silicon (dmg, Metal, ad hoc signed, not notarized). The last job checks that the tag matches the `version` in `app/src-tauri/tauri.conf.json`, and publishes the release "Haru <version>" with all installers, a file with SHA256 checksums, the text from `.github/release-notes.md`, and the changes generated by GitHub. Using "Run workflow" (`workflow_dispatch`), the same workflow builds all installers as artifacts only, without a release.
 
-Ein Release erstellen:
+To create a release:
 
-1. Version erhöhen, an drei Stellen gleich: `version` in `app/src-tauri/tauri.conf.json`, `version` in `app/src-tauri/Cargo.toml` (danach einmal `cargo check --manifest-path app/src-tauri/Cargo.toml`, das aktualisiert `Cargo.lock`) und in `app/package.json` (`npm --prefix app version 0.2.0 --no-git-tag-version` ändert auch `package-lock.json`).
-2. Die Änderung committen und auf `main` pushen.
-3. Tag setzen und pushen:
+1. Increase the version in three places, keeping them identical: `version` in `app/src-tauri/tauri.conf.json`, `version` in `app/src-tauri/Cargo.toml` (then run `cargo check --manifest-path app/src-tauri/Cargo.toml` once, which updates `Cargo.lock`), and in `app/package.json` (`npm --prefix app version 0.2.0 --no-git-tag-version` also updates `package-lock.json`).
+2. Commit the change and push it to `main`.
+3. Set and push the tag:
 
    ```powershell
    git tag v0.2.0
    git push origin v0.2.0
    ```
 
-Passt das Tag nicht zur Version in `tauri.conf.json`, bricht der Workflow sofort ab, bevor etwas gebaut wird.
+If the tag does not match the version in `tauri.conf.json`, the workflow aborts immediately, before anything is built.
 
-## Erster Start
+## First Start
 
-1. Haru erkennt die verfügbaren Backends (Boot-Screen).
-2. Falls das Modell fehlt, lädt Haru es herunter (6,6 GB, Fortschritt als glühende Linie mit Geschwindigkeit und Restzeit). Danach wird es geprüft (SHA256). Ein Abbruch ist unkritisch: Beim nächsten Start setzt der Download an der gleichen Stelle fort.
-3. Das Modell landet im Cache von speech.cpp, zusammen mit dem speech-CLI:
+1. Haru detects the available backends (boot screen).
+2. If the model is missing, Haru downloads it (6.6 GB, progress shown as a glowing line with speed and remaining time). Afterwards it is verified (SHA256). Stopping the download is harmless: on the next start, the download continues where it stopped.
+3. The model is stored in the speech.cpp cache, together with the speech CLI:
 
    ```
    %LOCALAPPDATA%\speech.cpp\models\sakasegawa--Haru-4B-GGUF\c372a527e63ca4251429a48863535b8bca03ebd6f414bbf31f28a9d175349934\Haru-4B-Q8_0.gguf
    ```
 
-   Eine frühere Q6_K-Datei bleibt im gemeinsamen speech.cpp-Cache liegen. Haru löscht sie nicht; sie lässt sich von Hand entfernen. Löscht die Deinstallation das Modell mit (siehe Deinstallation unten), entfällt sie ebenfalls, da sie im selben Modellordner liegt.
+   An earlier Q6_K file remains in the shared speech.cpp cache. Haru does not delete it; you can remove it by hand. If uninstalling also deletes the model (see Uninstall below), this file is removed as well, since it lies in the same model folder.
 
-   Mit `SPEECH_MODEL_DIR=<absoluter Pfad>` (Umgebungsvariable) wird der Modellordner ersetzt. Ein relativer Pfad wird abgelehnt.
-4. Beim allerersten Start erscheint ein Hinweis: Kopfhörer klingen am besten, über Lautsprecher sorgt die Echounterdrückung dafür, dass Haru sich nicht selbst hört. Danach drückst du **Start**.
+   Setting `SPEECH_MODEL_DIR=<absolute path>` (environment variable) replaces the model folder. A relative path is rejected.
+4. On the very first start, a notice appears: headphones sound best; over speakers, echo cancellation makes sure Haru does not hear itself. Then press **Start**.
 
-Die Oberfläche erscheint beim ersten Start in der Sprache des Betriebssystems, sofern sie unterstützt wird, sonst auf Englisch (siehe [Sprache](#sprache)).
+On first start, the UI appears in the operating system's language if it is supported; otherwise in English (see [Language](#language)).
 
-**Deinstallation:** Das Deinstallationsprogramm fragt am Ende, ob das Haru-Modell (ca. 6,6 GB) ebenfalls gelöscht werden soll. Die Standardantwort ist Nein. Bleibt das Modell erhalten, muss eine neue Installation es nicht erneut herunterladen.
+**Uninstall:** At the end, the uninstaller asks whether the Haru model (about 6.6 GB) should also be deleted. The default answer is No. If the model is kept, a new installation does not have to download it again.
 
-Gelöscht wird nur der Modellordner von Haru: `%LOCALAPPDATA%\speech.cpp\models\sakasegawa--Haru-4B-GGUF` (bzw. derselbe Ordner unter `SPEECH_MODEL_DIR`, falls gesetzt). Andere Modelle und der übrige speech.cpp-Cache bleiben erhalten. Leere Ordner `models` und `speech.cpp` am Standardort werden entfernt.
+Only Haru's model folder is deleted: `%LOCALAPPDATA%\speech.cpp\models\sakasegawa--Haru-4B-GGUF` (or the same folder under `SPEECH_MODEL_DIR`, if set). Other models and the rest of the speech.cpp cache are kept. Empty `models` and `speech.cpp` folders at the default location are removed.
 
-Bei einem Update (Deinstallationsprogramm mit `/UPDATE`) wird nie gefragt und das Modell nie gelöscht. Auch stille (`/S`) und passive (`/P`) Deinstallationen fragen nicht; dort wird das Modell nur mit dem Parameter `/DELETEMODEL` entfernt, zum Beispiel `uninstall.exe /S /DELETEMODEL`.
+During an update (uninstaller run with `/UPDATE`), it never asks and never deletes the model. Silent (`/S`) and passive (`/P`) uninstalls do not ask either; there, the model is only removed with the parameter `/DELETEMODEL`, for example `uninstall.exe /S /DELETEMODEL`.
 
-Die Option zum Löschen der Anwendungsdaten im Deinstallationsprogramm ist davon getrennt: Sie entfernt `settings.json` und die Datenordner der App, nicht das Modell.
+The uninstaller's option to delete application data is separate from this: it removes `settings.json` and the app's data folders, but not the model.
 
-Der Installer ersetzt den Ordner `backends` einer vorhandenen Installation, damit ein Wechsel zwischen dem normalen und dem CUDA-Installer keine alte Variante zurücklässt.
+The installer replaces the `backends` folder of an existing installation, so switching between the regular and the CUDA installer does not leave an old variant behind.
 
-## Bedienung
+## Usage
 
-| Taste | Funktion |
+| Key | Function |
 |---|---|
-| **M** | Mikrofon stummschalten (gilt für das laufende und die folgenden Gespräche, wird nicht gespeichert) |
-| **S** | Einstellungen öffnen |
-| **F** | Vollbild umschalten |
+| **M** | Mute the microphone (applies to the current and following conversations, not saved) |
+| **S** | Open settings |
+| **F** | Toggle fullscreen |
 
-Das HUD zeigt Backend-Badge (z. B. „Vulkan · Intel(R) Arc(TM) B580 Graphics"), Latenz, Mikrofonpegel sowie Tasten für Mute, Einstellungen und Vollbild.
+The HUD shows the backend badge (e.g. "Vulkan · Intel(R) Arc(TM) B580 Graphics"), latency, microphone level, and buttons for mute, settings and fullscreen.
 
-### Einstellungen
+### Settings
 
-Gespeichert als `settings.json` im App-Config-Ordner (unter Windows `%APPDATA%\dev.haru.fluidlight\settings.json`). Nur explizit gesetzte Optionen gehen an den Worker.
+Saved as `settings.json` in the app's config folder (on Windows: `%APPDATA%\dev.haru.fluidlight\settings.json`). Only explicitly set options are passed to the worker.
 
-| Schlüssel | Standard | Bedeutung |
+| Key | Default | Meaning |
 |---|---|---|
-| `language` | Betriebssystem, sonst `"en"` | Sprache der Oberfläche und des Gesprächs (Feld „Sprache“): de, en, es, fr, ja, ko, pt, ru, zh |
-| `name` | `"Haru"` | Name, den Haru verwendet. Leer oder `"Haru"` = Name der Karte (Japanisch: ハル) |
-| `gender` | `null` | `"female"` oder `"male"` |
-| `backchannel` | `null` | Zwischenlaute: `"low"`, `"mid"`, `"high"`. `null` = Wert der offiziellen Karte (`mid`) |
-| `speakFirst` | `true` | Haru beginnt das Gespräch |
-| `temperature` | `0.6` | Kreativität, 0,3 bis 1,0 (höher: Haru redet mehr und hört weniger zu) |
-| `topK` | `25` | Top-k-Sampling, 0 bis 500 |
-| `voicePath` | `null` | Optionale WAV-Datei für die Stimme |
-| `inputDevice` | `null` | Mikrofon (`null` = Standardgerät) |
-| `outputDevice` | `null` | Ausgabegerät (`null` = Standardgerät) |
+| `language` | OS language, otherwise `"en"` | Language of the UI and the conversation (the Language field): de, en, es, fr, ja, ko, pt, ru, zh |
+| `name` | `"Haru"` | Name Haru uses. Empty or `"Haru"` = the card's name (Japanese: ハル) |
+| `gender` | `null` | `"female"` or `"male"` |
+| `backchannel` | `null` | Interjections: `"low"`, `"mid"`, `"high"`. `null` = value of the official card (`mid`) |
+| `speakFirst` | `true` | Haru starts the conversation |
+| `temperature` | `0.6` | Creativity, 0.3 to 1.0 (higher: Haru talks more and listens less) |
+| `topK` | `25` | Top-k sampling, 0 to 500 |
+| `voicePath` | `null` | Optional WAV file for the voice |
+| `inputDevice` | `null` | Microphone (`null` = default device) |
+| `outputDevice` | `null` | Output device (`null` = default device) |
 | `backend` | `"auto"` | `auto`, `cuda`, `vulkan`, `metal`, `cpu` |
-| `device` | `"auto"` | `auto` oder ein Name aus `speech devices` (z. B. `Vulkan0`) |
+| `device` | `"auto"` | `auto`, or a name from `speech devices` (e.g. `Vulkan0`) |
 | `quality` | `"auto"` | `auto`, `low`, `medium`, `high`, `ultra` |
-| `subtitles` | `false` | Untertitel einblenden |
-| `lagLimitSecs` | `1.0` | Rückstandsgrenze in Sekunden, 0,5 bis 10 |
-| `echoCancellation` | `true` | Echounterdrückung (Harus Stimme aus dem Mikrofon entfernen). Wirkt ab dem nächsten Gespräch; `false` schickt das Mikrofonsignal unverändert an das Modell. Fehlt der Schlüssel in einer alten `settings.json`, gilt `true`. |
+| `subtitles` | `false` | Show subtitles |
+| `lagLimitSecs` | `1.0` | Lag limit in seconds, 0.5 to 10 |
+| `echoCancellation` | `true` | Echo cancellation (remove Haru's voice from the microphone). Takes effect from the next conversation; `false` sends the microphone signal unchanged to the model. If the key is missing in an old `settings.json`, `true` applies. |
 
-Änderungen an `backend`, `device` oder `voicePath` laden das Modell neu.
+Changes to `backend`, `device` or `voicePath` reload the model.
 
-### Sprache
+### Language
 
-Die Einstellung `language` steuert die ganze Oberfläche (Startbildschirm, Hinweise, Einstellungen, Fehlermeldungen) und die Sprache, in der Haru spricht (Charakterkarte und Gespräch).
+The `language` setting controls the entire UI (start screen, notices, settings, error messages) and the language Haru speaks (character card and conversation).
 
-Unterstützt werden Deutsch (`de`), English (`en`), Español (`es`), Français (`fr`), 日本語 (`ja`), 한국어 (`ko`), Português (`pt`), Русский (`ru`) und 中文 (`zh`, vereinfachtes Chinesisch).
+Supported are German (`de`), English (`en`), Español (`es`), Français (`fr`), 日本語 (`ja`), 한국어 (`ko`), Português (`pt`), Русский (`ru`) and 中文 (`zh`, Simplified Chinese).
 
-- **Erster Start:** Ohne `settings.json` oder mit einer unlesbaren bzw. beschädigten Datei (die dann als `settings.json.bad` gesichert wird) nimmt Haru die erste unterstützte Sprache aus den bevorzugten Sprachen des Betriebssystems. Regionale Varianten zählen zur Grundsprache (`de-AT` → `de`, `pt-BR` → `pt`, `zh-TW` → `zh`). Ist keine Sprache des Betriebssystems unterstützt, nimmt Haru Englisch.
-- **Ändern:** Nach dem Speichern in den Einstellungen wird die Oberfläche sofort in der neuen Sprache angezeigt. Ein laufendes Gespräch behält seine Sprache, die neue gilt ab dem nächsten Gespräch.
-- **Speichern:** Die gewählte Sprache steht ab dem ersten Speichern in `settings.json`, zum Beispiel wenn du den Kopfhörer-Hinweis bestätigst.
+- **First start:** Without a `settings.json`, or with an unreadable or damaged file (which is then backed up as `settings.json.bad`), Haru takes the first supported language from the operating system's preferred languages. Regional variants count as their base language (`de-AT` → `de`, `pt-BR` → `pt`, `zh-TW` → `zh`). If none of the operating system's languages is supported, Haru uses English.
+- **Changing:** After saving in the settings, the UI immediately switches to the new language. A running conversation keeps its language; the new one applies from the next conversation.
+- **Saving:** The chosen language is stored in `settings.json` from the first save on, for example when you confirm the headphone notice.
 
-### Charakterkarte
+### Character Card
 
-Haru nutzt die Karte der gewählten Persona (siehe [Personas: Engel und Dämon](#personas-engel-und-dämon)). Ein eigener Name oder ein eigener Zwischenlaut-Wert überschreibt die Karte. Ein eigener Name ersetzt außerdem „Haru“ in den Kartentexten.
+Haru uses the card of the selected persona (see [Personas: Angel and Demon](#personas-angel-and-demon)). A custom name or a custom backchannel value overrides the card. A custom name also replaces "Haru" in the card texts.
 
-### Gesprächsabschnitte
+### Conversation Segments
 
-Der Speicher für das Gedächtnis des Modells (KV-Cache) wächst mit jeder Sekunde Gespräch. Haru liest vor jedem Abschnitt den freien Speicher des Geräts und wählt die Länge: (freier Speicher − 512 MiB bei GPU bzw. 1 GiB bei CPU) / 500 kB pro Sekunde, begrenzt auf 120 bis 3600 s. Unter Windows stammt der freie GPU-Speicher aus dem systemweiten GPU-Speicherzähler (DXGI + PDH), sonst aus der Geräteliste von speech.cpp. Ist der Abschnitt zu Ende, beginnt Haru automatisch frisch (ohne Neuladen des Modells), ein Hinweis erscheint kurz oben, und Haru antwortet nach ein bis zwei Sekunden wieder. Was im vorigen Abschnitt gesagt wurde, kennt Haru dann nicht mehr. `HARU_MAX_SECONDS` setzt die Abschnittslänge fest (nur zum Testen).
+The memory of the model (KV cache) grows with every second of conversation. Before each segment, Haru reads the device's free memory and picks the length: (free memory − 512 MiB for GPU, or 1 GiB for CPU) / 500 kB per second, limited to 120 to 3600 s. On Windows, the free GPU memory comes from the system-wide GPU memory counter (DXGI + PDH); otherwise it comes from the device list of speech.cpp. When a segment ends, Haru automatically starts afresh (without reloading the model), a notice briefly appears at the top, and Haru responds again after one to two seconds. Haru then no longer knows what was said in the previous segment. `HARU_MAX_SECONDS` sets a fixed segment length (for testing only).
 
-### Render-Qualität
+### Render Quality
 
-Auflösungen (Simulation / Farbfeld): low 128 / 512, medium 192 / 1024, high 256 / 1440, ultra 384 / 2048.
+Resolutions (simulation / color field): low 128 / 512, medium 192 / 1024, high 256 / 1440, ultra 384 / 2048.
 
-Zwei Regler arbeiten zusammen:
+Two controllers work together:
 
-- **Framezeit-Regler (`auto`):** Passt die Stufe an die Framezeit an (gleitender Mittelwert): Liegt sie über 20 ms für 2 s, sinkt die Stufe. Liegt sie unter 12 ms für 5 s, steigt sie. Er ruht, solange das Modell-Budget gedrosselt ist, damit gedrosselte Frames keine falschen Werte liefern. `ultra` wählt `auto` nie, nur explizit.
-- **Modell-zuerst-Regler** (`ModelFirstController`, `app/src/render/modelfirst.ts`): Nur während eines Gesprächs. Er beobachtet `latencyMs` aus den Viz-Frames und drosselt das Rendering, damit das Modell die GPU bekommt. Er deckelt die Stufe, die `auto` oder der Nutzer gewählt hat, und hebt sie nie an.
+- **Frame-time controller (`auto`):** Adjusts the level to the frame time (moving average): if the frame time is above 20 ms for 2 s, the level drops; if it is below 12 ms for 5 s, the level rises. It pauses while the model budget is throttled, so that throttled frames do not produce wrong values. `auto` never selects `ultra`; it is only set explicitly.
+- **Model-first controller** (`ModelFirstController`, `app/src/render/modelfirst.ts`): Only during a conversation. It watches `latencyMs` from the viz frames and throttles rendering so that the model gets the GPU. It caps the level that `auto` or the user has selected and never raises it.
 
-| Tier | Max. Stufe | Renderskalierung | FPS-Cap | Post-Effekte |
+| Tier | Max. level | Render scale | FPS cap | Post effects |
 |---|---|---|---|---|
-| 0 | keine | 1,0 | – | voll |
-| 1 | high | 0,75 | – | voll |
-| 2 | medium | 0,75 | 45 | reduziert |
-| 3 | low | 0,5 | 30 | minimal |
+| 0 | none | 1.0 | – | full |
+| 1 | high | 0.75 | – | full |
+| 2 | medium | 0.75 | 45 | reduced |
+| 3 | low | 0.5 | 30 | minimal |
 
-Ablauf des Modell-zuerst-Reglers:
+Sequence of the model-first controller:
 
-- Latenz über 450 ms für 0,5 s: eine Stufe nach unten, danach 1,5 s Ruhe bis zum nächsten Schritt.
-- Latenz über 700 ms für 0,2 s: sofort Tier 3.
-- Erholung: eine Stufe nach oben, wenn die Latenz 6 s lang unter 350 ms liegt.
+- Latency above 450 ms for 0.5 s: one tier down, then 1.5 s of rest before the next step.
+- Latency above 700 ms for 0.2 s: immediately tier 3.
+- Recovery: one tier up when the latency stays below 350 ms for 6 s.
 
-## Personas: Engel und Dämon
+## Personas: Angel and Demon
 
-Beim Start wählst du, wer Haru ist: links der Engel, rechts der Dämon. Klick, Enter oder Leertaste startet das Gespräch, die Pfeiltasten wechseln den Fokus.
+At start, you choose who Haru is: the angel on the left, the demon on the right. Click, Enter or Space starts the conversation; the arrow keys move the focus.
 
-- **Startbildschirm:** Die Figuren liegen als WebP mit Alpha in `app/public/personas/` (`angel.webp`, `devil.webp`). Prompts und Originale liegen in `assets/personas/<angel|devil>/` (erzeugt mit dem Bildwerkzeug der Codex CLI). `scripts/export-personas.py` verkleinert sie für die App.
-- **Charakterkarten:** Jede Persona hat eine eigene Karte in allen 9 Sprachen, eingebettet aus `app/src-tauri/assets/persona-cards/<persona>/<lang>.json`. Die offiziellen Karten in `assets/haru-cards/` bleiben im Repo als Referenz, die App nutzt sie nicht mehr. Das Freitextfeld „Persona“ entfällt.
-- **Eigener Name:** Ersetzt „Haru“ in der Karte wie bisher.
-- **Grenzen des Dämons:** Verachtung, Spott und schwarzer Humor sind erlaubt. Ausgeschlossen sind echte Anleitungen zu Schaden, Aufforderungen zur Selbstverletzung und Hetze gegen Gruppen.
-- **Pro Gespräch:** `start_conversation` bekommt die Persona als Argument `persona`. Alle Abschnitte eines Gesprächs behalten sie. Das Beispiel `headless_talk` nimmt den Engel, außer `HARU_PERSONA=daemon` ist gesetzt.
-- **Dämonenkopf:** `app/public/heads/daemon.glb` ist ein realistischer Kopf mit echter Hauttextur (Codex-Referenzbild → VARCO 3D → `build_head.py`, siehe `assets/heads/README.md`). Im Composite ersetzt die Textur die Porzellanfarbe, das Tintengate bleibt. Der Engel zeigt wie der Dämon einen realistischen, texturierten Engelskopf (`angel-female.glb` / `angel-male.glb`, weiblich oder männlich nach Stimme).
-- **Glut-Palette:** Beim Dämon wechseln Orbiter und Wort-Tinte auf Glut (Schwarzrot → Karmin → Orange → Bernstein). Die Mikrofontinte bleibt kühl.
-- **Dämonenstimme:** Der Filter `DemonVoice` (`app/src-tauri/src/audio/voice_fx.rs`) senkt die Stimme um etwa 9 Halbtöne (Formanten -2), mischt eine leise Suboktave, fügt dezente Sättigung (kein Knurren) und einen FDN-Kellerhall hinzu. Er kostet etwa 64 ms zusätzliche Latenz. Für den Daemon wird eine männliche Basisstimme erzwungen. Er läuft vor der Wiedergabe, damit die Echounterdrückung genau das Signal sieht, das du hörst.
-- **A/B-Vergleich:** `HARU_VOICE_FX=off` schaltet den Filter ab. Offline auf eine WAV-Datei: `cargo run --example voice_fx --manifest-path app/src-tauri/Cargo.toml -- in.wav out.wav`.
+- **Start screen:** The figures are stored as WebP with alpha in `app/public/personas/` (`angel.webp`, `devil.webp`). Prompts and originals are in `assets/personas/<angel|devil>/` (generated with the image tool of the Codex CLI). `scripts/export-personas.py` downsizes them for the app.
+- **Character cards:** Each persona has its own card in all 9 languages, embedded from `app/src-tauri/assets/persona-cards/<persona>/<lang>.json`. The official cards in `assets/haru-cards/` remain in the repo as a reference; the app no longer uses them. The free-text "Persona" field is removed.
+- **Custom name:** Replaces "Haru" in the card, as before.
+- **Limits of the demon:** Contempt, mockery and dark humor are allowed. Excluded are real instructions for harm, calls to self-harm, and hate against groups.
+- **Per conversation:** `start_conversation` receives the persona as the argument `persona`. All segments of a conversation keep it. The example `headless_talk` takes the angel unless `HARU_PERSONA=daemon` is set.
+- **Demon head:** `app/public/heads/daemon.glb` is a realistic head with a real skin texture (Codex reference image → VARCO 3D → `build_head.py`, see `assets/heads/README.md`). In the composite, the texture replaces the porcelain color; the ink gate remains. Like the demon, the angel shows a realistic, textured angel head (`angel-female.glb` / `angel-male.glb`, female or male depending on the voice).
+- **Ember palette:** For the demon, the orbiter and the word ink switch to embers (black-red → crimson → orange → amber). The microphone ink stays cool.
+- **Demon voice:** The `DemonVoice` filter (`app/src-tauri/src/audio/voice_fx.rs`) lowers the voice by about 9 semitones (formants −2), mixes in a quiet sub-octave, adds subtle saturation (no growl) and an FDN basement reverb. It adds about 64 ms of latency. A male base voice is forced for the demon. The filter runs before playback, so that echo cancellation sees exactly the signal you hear.
+- **A/B comparison:** `HARU_VOICE_FX=off` disables the filter. Offline, on a WAV file: `cargo run --example voice_fx --manifest-path app/src-tauri/Cargo.toml -- in.wav out.wav`.
 
-## Backend-Auswahl
+## Backend Selection
 
-Die Versuchsreihenfolge (`choose_plan`):
+The order of attempts (`choose_plan`):
 
-1. **Überschreibung zuerst:** `HARU_BACKEND` / `HARU_DEVICE`, sonst die Einstellungen `backend` / `device`.
-2. **CUDA**, wenn der CUDA-Treiber per `nvcuda.dll` (Windows) bzw. `libcuda.so.1` (Linux) erreichbar ist und die Variante `cuda` vorhanden ist. Gerät: das CUDA-Gerät mit dem meisten Speicher.
-3. **Vulkan:** diskrete GPU mit dem meisten Speicher, sonst die integrierte GPU.
-4. **Metal** (nur macOS).
-5. **CPU** als letzter Versuch, mit Warnung, dass dies langsam ist.
+1. **Override first:** `HARU_BACKEND` / `HARU_DEVICE`, otherwise the settings `backend` / `device`.
+2. **CUDA**, if the CUDA driver can be reached via `nvcuda.dll` (Windows) or `libcuda.so.1` (Linux) and the `cuda` variant is present. Device: the CUDA device with the most memory.
+3. **Vulkan:** the discrete GPU with the most memory, otherwise the integrated GPU.
+4. **Metal** (macOS only).
+5. **CPU** as a last attempt, with a warning that this is slow.
 
-**8-GB-Regel:** Haru braucht eine Grafikkarte mit mindestens 8 GB. Die automatische Wahl nimmt nur Geräte ab 7 GiB gemeldetem Speicher (manche 8-GB-Karten melden über Vulkan etwas weniger als 7,5 GiB). Findet sich keine, läuft Haru auf der CPU und zeigt die Warnung „Keine Grafikkarte mit mindestens 8 GB gefunden“. Ein ausdrücklich gewähltes Gerät (`HARU_DEVICE`, Einstellungen) bleibt erlaubt, bei weniger als 7 GiB erscheint aber eine Warnung, dass das Gespräch abbrechen kann. Mit `HARU_BACKEND=cpu` bleibt es bei der normalen CPU-Warnung.
+**8 GB rule:** Haru needs a graphics card with at least 8 GB. Automatic selection only takes devices with at least 7 GiB of reported memory (some 8 GB cards report slightly less than 7.5 GiB via Vulkan). If none is found, Haru runs on the CPU and shows a warning that no graphics card with at least 8 GB was found. A device explicitly selected (`HARU_DEVICE`, settings) remains allowed, but below 7 GiB a warning appears that the conversation may abort. With `HARU_BACKEND=cpu`, only the normal CPU warning is shown.
 
-Schlägt ein Versuch fehl (Worker-Absturz, Gerät nicht verfügbar, kein `ready`, kein erster Frame im Zeitlimit), probiert die App den nächsten. Ist kein Versuch mehr übrig, erscheint ein Fehler mit dem Auszug aus dem Worker-Log.
+If an attempt fails (worker crash, device unavailable, no `ready`, no first frame within the timeout), the app tries the next one. If no attempt is left, an error appears with the excerpt from the worker log.
 
-Die Backend-Varianten liegen in `backends\<variante>\speech.exe` (Windows). Die App sucht sie in dieser Reihenfolge:
+The backend variants are located in `backends\<variant>\speech.exe` (Windows). The app searches for them in this order:
 
-1. Umgebungsvariable `HARU_BACKENDS_DIR`
-2. Ressourcen-Ordner der installierten App
-3. Nur in Debug-Builds: `app\src-tauri\backends`
+1. Environment variable `HARU_BACKENDS_DIR`
+2. Resource folder of the installed app
+3. Only in debug builds: `app\src-tauri\backends`
 
-Umgebungsvariablen:
+Environment variables:
 
-| Variable | Werte | Wirkung |
+| Variable | Values | Effect |
 |---|---|---|
-| `HARU_BACKEND` | `cuda`, `vulkan`, `metal`, `cpu` | Erzwingt die Variante (`AUTO` oder leer = keine Überschreibung) |
-| `HARU_DEVICE` | `auto` oder ein Name aus `speech devices`, z. B. `Vulkan0` | Erzwingt das Gerät |
-| `HARU_BACKENDS_DIR` | absoluter Pfad | Ordner mit den Varianten |
-| `HARU_MAX_SECONDS` | Sekunden, 10 bis 3600 | Nur zum Testen: feste Länge eines Gesprächsabschnitts statt der Berechnung aus dem freien Speicher |
+| `HARU_BACKEND` | `cuda`, `vulkan`, `metal`, `cpu` | Forces the variant (`AUTO` or empty = no override) |
+| `HARU_DEVICE` | `auto` or a name from `speech devices`, e.g. `Vulkan0` | Forces the device |
+| `HARU_BACKENDS_DIR` | absolute path | Folder containing the variants |
+| `HARU_MAX_SECONDS` | seconds, 10 to 3600 | For testing only: fixed length of a conversation segment instead of the calculation from free memory |
 
-Gerätenamen liefert `backends\vulkan\speech.exe devices --json`. Die Indizes (`Vulkan0`, `Vulkan1`) hängen vom Rechner ab. Ein angegebenes, fehlendes Gerät ist ein Fehler, kein stiller Ersatz.
+Device names are listed by `backends\vulkan\speech.exe devices --json`. The indices (`Vulkan0`, `Vulkan1`) depend on the machine. A specified device that is missing is an error, not a silent fallback.
 
-## Aus dem Quellcode bauen
+## Build from Source
 
-### 1. Repository mit Submodul
+### 1. Repository with submodule
 
 ```powershell
 git clone --recurse-submodules <repo-url>
 cd haru
-# oder, falls schon geklont:
+# or, if already cloned:
 git submodule update --init --recursive
 ```
 
-`extern/speech.cpp` (MIT) ist ein Submodul auf v0.11.1.
+`extern/speech.cpp` (MIT) is a submodule pinned to v0.11.1.
 
-### 2. Backend-Varianten bauen
+### 2. Build backend variants
 
 ```powershell
 scripts\build-backends.ps1 -Variants vulkan
-# NVIDIA: CUDA-Toolkit 12.x installieren (CUDA_PATH wird gesetzt)
+# NVIDIA: install the CUDA Toolkit 12.x (CUDA_PATH is set)
 scripts\build-backends.ps1 -Variants cuda
 ```
 
-Das Ergebnis liegt in `app\src-tauri\backends\<variante>\speech.exe`. Der Ordner ist per `.gitignore` ausgeschlossen.
+The result is in `app\src-tauri\backends\<variant>\speech.exe`. The folder is excluded via `.gitignore`.
 
-Das Bauen wendet vorher alle Patches aus `patches/ggml/` auf das ggml-Submodul (`extern/speech.cpp/ggml`) an (`git apply`, idempotent: ein bereits angewendeter Patch wird übersprungen, ein nicht anwendbarer bricht den Build ab). Grund: Das gepinnte ggml bricht mit `GGML_ASSERT(wg0 <= maxComputeWorkGroupCount[0])` ab, wenn RMS_NORM mehr als 65535 Zeilen hat (Intel-GPUs, z. B. beim Anlegen einer Stimme aus einer Referenzaufnahme); der Patch behebt das, ohne einen eigenen Commit im verschachtelten Submodul zu brauchen. Die Patches ändern nur das Arbeitsverzeichnis des Submoduls.
+Before building, the build applies all patches from `patches/ggml/` to the ggml submodule (`extern/speech.cpp/ggml`) (`git apply`, idempotent: a patch that is already applied is skipped, one that cannot be applied aborts the build). Reason: the pinned ggml aborts with `GGML_ASSERT(wg0 <= maxComputeWorkGroupCount[0])` when RMS_NORM has more than 65535 rows (Intel GPUs, e.g. when creating a voice from a reference recording); the patch fixes this without needing its own commit in the nested submodule. The patches only change the working directory of the submodule.
 
-### 3. Frontend und App
+### 3. Frontend and app
 
 ```powershell
 npm --prefix app install
-npm --prefix app run tauri dev      # Entwicklungsmodus mit Hot Reload
+npm --prefix app run tauri dev      # development mode with hot reload
 npm --prefix app run tauri build -- --bundles nsis
 ```
 
-Der Installer landet in `app\src-tauri\target\release\bundle\nsis\Haru_<version>_x64-setup.exe`.
+The installer ends up in `app\src-tauri\target\release\bundle\nsis\Haru_<version>_x64-setup.exe`.
 
-### 4. Frontend im Browser (ohne Rust-Kern)
+### 4. Frontend in the browser (without the Rust core)
 
-Die Oberfläche lässt sich mit einem Mock-Client im Browser entwickeln:
+The UI can be developed in the browser with a mock client:
 
 ```powershell
 npm --prefix app run dev
 ```
 
-| URL | Szenario |
+| URL | Scenario |
 |---|---|
-| `http://localhost:5173/?mock` | Deutsches Gespräch mit Boot, Download und Antworten |
-| `http://localhost:5173/?mock=ja` | Japanisches Skript |
-| `http://localhost:5173/?mock=error` | Boot-Fehler (`noBackend`) mit Retry |
-| `http://localhost:5173/?mock=lag` | Gespräch, das am Rückstandslimit endet |
-| `http://localhost:5173/?mock=slow` | Mock-Latenz steigt 300 → 900 ms (20 s) und fällt wieder (20 s), zeigt den Modell-zuerst-Regler |
-| `http://localhost:5173/?debug` | Debug-Overlay: FPS, GL-Renderer, Qualitätsstufe, `mf-tier N xSCALE capFPS` |
+| `http://localhost:5173/?mock` | German conversation with boot, download and replies |
+| `http://localhost:5173/?mock=ja` | Japanese script |
+| `http://localhost:5173/?mock=error` | Boot error (`noBackend`) with retry |
+| `http://localhost:5173/?mock=lag` | Conversation that ends at the lag limit |
+| `http://localhost:5173/?mock=slow` | Mock latency rises from 300 to 900 ms (20 s) and falls again (20 s); shows the model-first controller |
+| `http://localhost:5173/?debug` | Debug overlay: FPS, GL renderer, quality level, `mf-tier N xSCALE capFPS` |
 
-Weitere Debug-Parameter: `?quality=<stufe>` (mit `?debug`) fixiert die Qualität und überstimmt die Einstellungen. `?modelfirst=off` (mit `?debug`) schaltet den Modell-zuerst-Regler ab, etwa für A/B-Vergleiche.
+Further debug parameters: `?quality=<level>` (with `?debug`) fixes the quality and overrides the settings. `?modelfirst=off` (with `?debug`) disables the model-first controller, e.g. for A/B comparisons.
 
 ## Tests
 
 ```powershell
-cargo test --manifest-path app/src-tauri/Cargo.toml --lib   # Rust-Unit-Tests
-npm --prefix app run test                                    # TypeScript-Tests (vitest)
+cargo test --manifest-path app/src-tauri/Cargo.toml --lib   # Rust unit tests
+npm --prefix app run test                                    # TypeScript tests (vitest)
 ```
 
-Die Echounterdrückung wird synthetisch geprüft (sprachähnliches Signal, simulierter Raum mit 100 ms Nachhall und 60 ms Verzögerung; Dämpfung nach Einschwingen und Doppelsprechen). Die Echtzeit-Simulation durch die echte Mikrofon-Pumpe dauert ca. 8,5 s und läuft nur auf Anforderung:
+Echo cancellation is checked synthetically (a speech-like signal, a simulated room with 100 ms reverb and 60 ms delay; attenuation after convergence and double-talk). The real-time simulation through the real microphone pump takes about 8.5 s and only runs on request:
 
 ```powershell
 cargo test --manifest-path app/src-tauri/Cargo.toml --lib pump_cancels_echo_in_real_time_simulation -- --ignored --nocapture
 ```
 
-Der Test `ipc::tests::contract_fixtures_match` und `contract.test.ts` prüfen, dass Rust und TypeScript dieselben IPC-Fixtures serialisieren und lesen.
+The test `ipc::tests::contract_fixtures_match` and `contract.test.ts` check that Rust and TypeScript serialize and read the same IPC fixtures.
 
-Echte Worker-Tests sind separat markiert:
+Real worker tests are marked separately:
 
 ```powershell
-# Gegen ein echtes speech.exe und das Modell:
+# Against a real speech.exe and the model:
 $env:HARU_TEST_SPEECH = "app\src-tauri\backends\vulkan\speech.exe"
 cargo test --manifest-path app/src-tauri/Cargo.toml --lib query_real -- --ignored --nocapture
 
-# M0-Spike mit echtem Worker und Modell: Optionen stehen in app/src-tauri/examples/dialogue_smoke.rs
-cargo run --release --manifest-path app/src-tauri/Cargo.toml --example dialogue_smoke -- <Optionen>
+# M0 spike with real worker and model: options are in app/src-tauri/examples/dialogue_smoke.rs
+cargo run --release --manifest-path app/src-tauri/Cargo.toml --example dialogue_smoke -- <options>
 ```
 
-## Architektur
+## Architecture
 
 ```
  UI (app/src, TypeScript, WebGL2)
    │  invoke · Channel (Viz ~60 Hz, Download) · Event "haru:state"
    ▼
- Rust-Kern (app/src-tauri/src)  Session-Zustandsmaschine · Einstellungen · Backend-Plan · Modell-Download
-   │  Audio (cpal): Mikrofon → 20-ms-Blöcke      Wiedergabe ← 24 kHz, resampelt
-   │  JSON Lines über stdin/stdout
+ Rust core (app/src-tauri/src)  session state machine · settings · backend plan · model download
+   │  Audio (cpal): microphone → 20 ms blocks      playback ← 24 kHz, resampled
+   │  JSON Lines over stdin/stdout
    ▼
- speech worker (Kindprozess, backends/<variante>/speech[.exe])
-   └─ Haru-4B-Q8_0.gguf auf Vulkan, CUDA oder CPU
+ speech worker (child process, backends/<variant>/speech[.exe])
+   └─ Haru-4B-Q8_0.gguf on Vulkan, CUDA or CPU
 ```
 
-Der Worker läuft in einem eigenen Prozess. Stürzt er ab, probiert die App das nächste Backend.
+The worker runs in its own process. If it crashes, the app tries the next backend.
 
-### Module
+### Modules
 
-Rust-Kern, `app/src-tauri/src`:
+Rust core, `app/src-tauri/src`:
 
-- `lib.rs`, `main.rs`, `commands.rs`: Tauri-Builder, Befehle (`#[tauri::command]`)
-- `ipc.rs`: IPC-Vertrag (Zustände, Viz-Frames, Download-Ereignisse)
-- `error.rs`, `settings.rs`, `locale.rs`, `paths.rs`, `model_fetch.rs`: Fehler, Einstellungen, Spracherkennung aus dem Betriebssystem, Pfade, Download
-- `session.rs`, `session/`: Zustandsmaschine, Gespräch, Mikrofon-Pumpe, Frame-Zeitleiste, Latenz, Viz
-- `backend/`: Varianten, Geräte, CUDA-Probe, Ausführungsplan
-- `worker/`: JSON-Lines-Protokoll, PCM-Codec, Prozess
-- `audio/`: Geräte, Aufnahme, Wiedergabe, Resampling, Analyse
-- Echounterdrückung (`audio/aec.rs`): einziges Modul, das `sonora` kennt. Die Wiedergabe schreibt jeden abgespielten Wert zusätzlich in einen Referenz-Ringpuffer (Render-Tap); die Mikrofon-Pumpe (`session/mic_pump.rs`) bereinigt damit jeden 20-ms-Block, bevor Pegelanzeige und Worker ihn sehen. Bei einem Fehler fällt sie für den Rest des Gesprächs auf das Rohsignal zurück und warnt einmal.
-- `test_hooks.rs`: Test-Umgebungsvariablen (siehe unten)
+- `lib.rs`, `main.rs`, `commands.rs`: Tauri builder, commands (`#[tauri::command]`)
+- `ipc.rs`: IPC contract (states, viz frames, download events)
+- `error.rs`, `settings.rs`, `locale.rs`, `paths.rs`, `model_fetch.rs`: errors, settings, operating system language detection, paths, download
+- `session.rs`, `session/`: state machine, conversation, microphone pump, frame timeline, latency, viz
+- `backend/`: variants, devices, CUDA probe, execution plan
+- `worker/`: JSON Lines protocol, PCM codec, process
+- `audio/`: devices, capture, playback, resampling, analysis
+- Echo cancellation (`audio/aec.rs`): the only module that knows `sonora`. Playback additionally writes every played sample into a reference ring buffer (render tap); the microphone pump (`session/mic_pump.rs`) uses it to clean every 20 ms block before the level display and the worker see it. On an error, it falls back to the raw signal for the rest of the conversation and warns once.
+- `test_hooks.rs`: test environment variables (see below)
 
-Oberfläche, `app/src` (TypeScript):
+UI, `app/src` (TypeScript):
 
-- `main.ts`, `app.ts`: Start, Verbindung von Client, Renderer und Overlays
-- `ipc/`: Vertragstypen, Tauri-Client, Mock-Client
-- `gl/`, `fluid/`, `post/`, `render/`: WebGL2, Stable-Fluids-Simulation, Post-Effekte, Qualitätsregler
-- `words/`, `audio/`: Wortpfade und Injektion, Audio-Kopplung
-- `ui/`: Overlays und `strings.ts` (Texte der Oberfläche in allen unterstützten Sprachen)
+- `main.ts`, `app.ts`: start, connection of client, renderer and overlays
+- `ipc/`: contract types, Tauri client, mock client
+- `gl/`, `fluid/`, `post/`, `render/`: WebGL2, Stable Fluids simulation, post effects, quality controllers
+- `words/`, `audio/`: word paths and injection, audio coupling
+- `ui/`: overlays and `strings.ts` (UI texts in all supported languages)
 
-## Leistung (gemessen)
+## Performance (Measured)
 
-Messung mit `dialogue_smoke` (M0, gemessen mit Q6_K, deutsche Testfrage, Details in `docs/m0-feasibility.md`). Rechenzeit pro Frame, ein Frame deckt 133 ms Audio ab:
+Measured with `dialogue_smoke` (M0, measured with Q6_K, German test question, details in `docs/m0-feasibility.md`). Compute time per frame; one frame covers 133 ms of audio:
 
-| Gerät | Modus | p50 | p90 | Über 133 ms | Urteil |
+| Device | Mode | p50 | p90 | Over 133 ms | Verdict |
 |---|---|---|---|---|---|
-| Intel Arc B580 (Vulkan) | lockstep | 34,8 ms | 68,2 ms | 1 von 95 (Frühframe) | PASS |
-| Intel Arc B580 (Vulkan) | Echtzeit | 35,4 ms | 56,0 ms | 0 | PASS |
-| Intel UHD (iGPU, Vulkan) | lockstep | 370,6 ms | 440,3 ms | 94 | zu langsam |
-| CPU (i7-11700B) | lockstep | 419,8 ms | 656,9 ms | 64 | zu langsam |
+| Intel Arc B580 (Vulkan) | lockstep | 34.8 ms | 68.2 ms | 1 of 95 (early frame) | PASS |
+| Intel Arc B580 (Vulkan) | real time | 35.4 ms | 56.0 ms | 0 | PASS |
+| Intel UHD (iGPU, Vulkan) | lockstep | 370.6 ms | 440.3 ms | 94 | too slow |
+| CPU (i7-11700B) | lockstep | 419.8 ms | 656.9 ms | 64 | too slow |
 
-Im Echtzeitlauf auf der B580 hinkte die Wiedergabe nie hinterher. Die App warnt bei iGPU und CPU, weil sie deutlich langsamer als Echtzeit sind. Die Messung läuft ohne Oberfläche. Im Betrieb drosselt der Modell-zuerst-Regler die Darstellung, sobald die Latenz über 450 ms steigt (siehe Render-Qualität).
+In the real-time run on the B580, playback never fell behind. The app warns for iGPU and CPU, because they are well below real time. The measurement runs without the UI. In operation, the model-first controller throttles the display as soon as latency rises above 450 ms (see Render Quality).
 
-## Fehlerbehebung
+## Troubleshooting
 
-**Gespräch endet mit „Die Verbindung hinkt zu stark hinterher"**
-Der Rückstand ist über `lagLimitSecs` (Standard 1,0 s) gestiegen, meist weil die GPU zu langsam oder ausgelastet ist. Warnschwelle ist 0,5 s, ab dem Limit beendet die App das Gespräch.
-- Der Modell-zuerst-Regler drosselt die Oberfläche bei hoher Latenz automatisch (siehe Render-Qualität). Das Modell bekommt so mehr GPU-Zeit, die Rechenzeit des Modells selbst sinkt dadurch nicht.
-- Andere GPU-Anwendungen schließen (Spiele, Video-Rendering, Browser mit Hardwarebeschleunigung).
-- `quality` auf `low` oder `medium` setzen, um die Oberfläche von vornherein zu entlasten.
-- Mit `HARU_DEVICE` oder den Einstellungen die schnelle GPU wählen, falls das HUD eine iGPU oder CPU zeigt.
+**Conversation ends with "Haru can’t keep up"**
+The lag has risen above `lagLimitSecs` (default 1.0 s), usually because the GPU is too slow or fully loaded. The warning threshold is 0.5 s; at the limit, the app ends the conversation.
+- The model-first controller automatically throttles the UI when latency is high (see Render Quality). This gives the model more GPU time; the model's own compute time does not decrease.
+- Close other GPU applications (games, video rendering, browsers with hardware acceleration).
+- Set `quality` to `low` or `medium` to relieve the UI from the start.
+- Use `HARU_DEVICE` or the settings to choose the faster GPU if the HUD shows an iGPU or CPU.
 
-**Remote-Desktop (RDP): langsam oder ruckelnd**
-Der Anzeigetreiber der RDP-Sitzung konkurriert mit dem Worker um dieselbe GPU. Fenster kleiner halten oder die App lokal laufen lassen.
+**Remote Desktop (RDP): slow or stuttering**
+The display driver of the RDP session competes with the worker for the same GPU. Keep the window smaller or run the app locally.
 
-**„Keine Backend-Variante gefunden"** (`noBackend`)
-Im Ordner `backends\<variante>\speech.exe` fehlt die Variante. Baue sie mit `scripts\build-backends.ps1 -Variants vulkan` (bzw. `cuda`) oder setze `HARU_BACKENDS_DIR` auf einen Ordner mit fertigen Varianten.
+**"No backend variant found"** (`noBackend`)
+The variant is missing from the folder `backends\<variant>\speech.exe`. Build it with `scripts\build-backends.ps1 -Variants vulkan` (or `cuda`), or set `HARU_BACKENDS_DIR` to a folder with ready-made variants.
 
-**Kein Backend startet, Meldung zeigt Worker-Fehler**
-Der Worker-Log liegt unter `%LOCALAPPDATA%\dev.haru.fluidlight\logs\worker-*.log`. Der letzte Log gehört zum fehlgeschlagenen Versuch. Häufige Ursachen: Gerät nicht vorhanden (`device`), zu wenig Speicher (`out_of_memory`), beschädigtes Modell (`model_file`, dann Datei löschen, Download läuft erneut).
+**No backend starts, the message shows a worker error**
+The worker log is in `%LOCALAPPDATA%\dev.haru.fluidlight\logs\worker-*.log`. The latest log belongs to the failed attempt. Common causes: device not present (`device`), too little memory (`out_of_memory`), damaged model (`model_file`; then delete the file, and the download runs again).
 
-**Kein Mikrofon**
-Windows-Datenschutz (Einstellungen → Datenschutz → Mikrofon) muss Desktop-Apps den Zugriff erlauben. Prüfe in den Einstellungen von Haru das Eingabegerät, oder setze `inputDevice` auf `null`.
+**No microphone**
+Windows privacy settings (Settings → Privacy & security → Microphone) must allow desktop apps access. Check the input device in Haru's settings, or set `inputDevice` to `null`.
 
-**Download bricht ab**
-Neu starten. Der Download setzt an der `.part`-Datei fort. Ein Hash-Fehler lädt das Modell neu.
+**Download aborts**
+Restart the app. The download continues from the `.part` file. A hash error downloads the model again.
 
-**Haru hört sich selbst (Echo)**
-Prüfe, ob in den Einstellungen die Echounterdrückung an ist (sie wirkt ab dem nächsten Gespräch). Bleibt starkes Restecho, etwa bei sehr lauter Wiedergabe oder wenn Windows-Klangverbesserungen oder Treiber das Mikrofon zusätzlich verarbeiten, helfen Kopfhörer. Erscheint die Warnung „Echounterdrückung nicht verfügbar“ oder „ausgefallen“, läuft das Gespräch mit dem Rohsignal weiter.
+**Haru hears itself (echo)**
+Check whether echo cancellation is on in the settings (it takes effect from the next conversation). If strong residual echo remains, for example at very loud playback, or when Windows sound enhancements or drivers process the microphone additionally, headphones help. If a warning that echo cancellation is unavailable or has failed appears, the conversation continues with the raw signal.
 
-## Test- und Entwicklungs-Umgebungsvariablen
+## Test and Development Environment Variables
 
-Gelesen in `app/src-tauri/src/test_hooks.rs`. Ohne diese Variablen verhält sich die App normal.
+Read in `app/src-tauri/src/test_hooks.rs`. Without these variables, the app behaves normally.
 
-| Variable | Wirkung |
+| Variable | Effect |
 |---|---|
-| `HARU_TEST_WAV=<pfad>` | Diese WAV-Datei ersetzt das Mikrofon. Sie läuft in Echtzeit ab Gesprächsbeginn, danach Stille. Die Wiedergabe geht weiter an das echte Ausgabegerät, außer `HARU_TEST_NO_PLAYBACK=1`. Echounterdrückung ist dabei aus (keine echte Referenz). |
-| `HARU_TEST_NO_PLAYBACK=1` | Harus Audio geht an eine virtuelle Senke (stiller Lauf). Funktioniert auch ohne WAV, dann wird das echte Mikrofon genutzt. |
-| `HARU_TEST_AUTOSTART=1` | Die Oberfläche schließt den Kopfhörer-Hinweis und drückt nach dem Start selbst Start. |
-| `HARU_TEST_DEBUG=1` | Aktiviert das `?debug`-Overlay und schreibt GL-Renderer, FPS und Zustand nach stderr. |
-| `HARU_TEST_NO_RENDER=1` | Stoppt die WebGL-Render-Schleife (zusammen mit `HARU_TEST_DEBUG`). Trennt GPU-Last der Oberfläche von Rückstand im Kern. |
-| `HARU_TEST_QUALITY=<stufe>` | Fixiert die Render-Qualität (`low`, `medium`, `high`, `ultra`) und überstimmt die Einstellungen. Wirkt nur mit `HARU_TEST_DEBUG`. |
+| `HARU_TEST_WAV=<path>` | This WAV file replaces the microphone. It plays in real time from the start of the conversation, then silence. Playback still goes to the real output device, unless `HARU_TEST_NO_PLAYBACK=1` is set. Echo cancellation is off in this case (no real reference). |
+| `HARU_TEST_NO_PLAYBACK=1` | Haru's audio goes to a virtual sink (silent run). Also works without a WAV; then the real microphone is used. |
+| `HARU_TEST_AUTOSTART=1` | The UI closes the headphone notice and presses Start itself after launch. |
+| `HARU_TEST_DEBUG=1` | Enables the `?debug` overlay and writes GL renderer, FPS and state to stderr. |
+| `HARU_TEST_NO_RENDER=1` | Stops the WebGL render loop (together with `HARU_TEST_DEBUG`). Separates the GPU load of the UI from the lag in the core. |
+| `HARU_TEST_QUALITY=<level>` | Fixes the render quality (`low`, `medium`, `high`, `ultra`) and overrides the settings. Only works together with `HARU_TEST_DEBUG`. |
 
-## Portierung
+## Porting
 
-- **Linux:** `bash scripts/build-backends.sh vulkan` (Standard ist `vulkan cpu`). Die CUDA-Probe lädt `libcuda.so.1`, der Worker erhält sein Binärverzeichnis in `LD_LIBRARY_PATH`. Der Job `linux` der CI testet und baut die Vulkan-Variante als Portabilitätsprüfung. AppImage und deb (Vulkan und CPU) baut der Release-Workflow, siehe [Releases](#releases).
-- **macOS:** `bash scripts/build-backends.sh metal` (Standard unter Darwin, mit `-DGGML_METAL_EMBED_LIBRARY=ON`). Der Release-Workflow baut ein dmg für Apple Silicon (ab macOS 13.3, `bundle.macOS.minimumSystemVersion`); auf echter Hardware nicht getestet.
+- **Linux:** `bash scripts/build-backends.sh vulkan` (default is `vulkan cpu`). The CUDA probe loads `libcuda.so.1`; the worker gets its binary directory in `LD_LIBRARY_PATH`. The `linux` job of the CI tests and builds the Vulkan variant as a portability check. The release workflow builds the AppImage and deb (Vulkan and CPU), see [Releases](#releases).
+- **macOS:** `bash scripts/build-backends.sh metal` (default on Darwin, with `-DGGML_METAL_EMBED_LIBRARY=ON`). The release workflow builds a dmg for Apple Silicon (from macOS 13.3, `bundle.macOS.minimumSystemVersion`); not tested on real hardware.
 
-## Lizenzen
+## Licenses
 
-- **Haru-Anwendung:** Die Projektlizenz ist noch nicht gewählt.
-- **speech.cpp** (Submodul `extern/speech.cpp`): MIT.
-- **Haru-4B** (Modellgewichte, `sakasegawa/Haru-4B-GGUF`): Apache-2.0. Haru-4B ist ein Forschungsmodell.
-- **sonora** (Rust-Port des WebRTC-Audioprozessors, Echounterdrückung): BSD-3-Clause.
-- **Inter Variable** (Schrift, `@fontsource-variable/inter`): SIL Open Font License 1.1.
+- **Haru application:** The project license has not been chosen yet.
+- **speech.cpp** (submodule `extern/speech.cpp`): MIT.
+- **Haru-4B** (model weights, `sakasegawa/Haru-4B-GGUF`): Apache-2.0. Haru-4B is a research model.
+- **sonora** (Rust port of the WebRTC audio processor, echo cancellation): BSD-3-Clause.
+- **Inter Variable** (font, `@fontsource-variable/inter`): SIL Open Font License 1.1.
 
-## Bekannte Einschränkungen
+## Known Limitations
 
-- **CUDA-Variante:** Wird nur in der CI gebaut. Sie ist auf echter Hardware nicht getestet, weil die CI keine GPU hat. Scheitert sie, greift die Fallback-Kette auf Vulkan oder CPU.
-- **Echounterdrückung:** Synthetisch geprüft (Dämpfung, Doppelsprechen, Echtzeit-Simulation); der Praxistest mit Lautsprechern steht noch aus und liegt beim Nutzer. Rauschunterdrückung und automatische Verstärkung verändern, was das Modell hört (wie im Browser).
-- **Modellverhalten mit synthetischen Stimmen:** Mit einer künstlichen Stimme (z. B. SAPI-Testdatei) fallen Antworten kurz und teils wirr aus. Das liegt am Modell, nicht an der Rechenzeit.
-- **Plattformen:** Gemessen nur unter Windows 11 mit Intel Arc B580. Linux und macOS sind nur als Portabilitätsziel angelegt. iGPU und CPU reichen für Echtzeit nicht.
+- **CUDA variant:** Only built in CI. It is not tested on real hardware, because CI has no GPU. If it fails, the fallback chain switches to Vulkan or CPU.
+- **Echo cancellation:** Checked synthetically (attenuation, double-talk, real-time simulation). The practical test with speakers is still pending and is up to the user. Noise suppression and automatic gain control change what the model hears (as in the browser).
+- **Model behavior with synthetic voices:** With an artificial voice (e.g. a SAPI test file), answers come out short and sometimes incoherent. This is due to the model, not to compute time.
+- **Platforms:** Measured only on Windows 11 with an Intel Arc B580. Linux and macOS are set up only as portability targets. iGPU and CPU are not sufficient for real time.

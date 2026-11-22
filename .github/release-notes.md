@@ -1,31 +1,31 @@
-<!-- Vorlage für den Release-Text. .github/workflows/release.yml ersetzt {{VERSION}} und hängt GitHubs automatisch erzeugte Änderungen an. -->
-**Haru** ist eine Desktop-App für ein Gespräch in Echtzeit mit dem Sprachmodell Haru-4B: Du sprichst ins Mikrofon, Haru antwortet mit Stimme, und jedes Wort erscheint als glühende Tinte in einer Fluidsimulation. Alles läuft lokal mit [speech.cpp](https://github.com/nyosegawa/speech.cpp).
+<!-- Template for the release text. .github/workflows/release.yml replaces {{VERSION}} and appends GitHub's automatically generated changes. -->
+**Haru** is a desktop app for a real-time conversation with the speech model Haru-4B: you speak into the microphone, Haru answers with voice, and every word appears as glowing ink in a fluid simulation. Everything runs locally with [speech.cpp](https://github.com/nyosegawa/speech.cpp).
 
 ## Download
 
-| System | Datei | Backends |
+| System | File | Backends |
 |---|---|---|
-| Windows 10/11, 64 Bit | `Haru_{{VERSION}}_x64-setup.exe` | Vulkan (jede Grafikkarte mit Vulkan 1.3, auch NVIDIA) |
-| Windows 10/11, 64 Bit, NVIDIA | `Haru_{{VERSION}}_x64-cuda-setup.exe` (etwa 370 MB) | CUDA und Vulkan |
-| Linux x64 | `Haru_{{VERSION}}_amd64.AppImage` (ohne Installation) oder `Haru_{{VERSION}}_amd64.deb` (Debian, Ubuntu) | Vulkan, CPU |
-| macOS 13.3 oder neuer, Apple Silicon | `Haru_{{VERSION}}_aarch64.dmg` | Metal |
+| Windows 10/11, 64-bit | `Haru_{{VERSION}}_x64-setup.exe` | Vulkan (any graphics card with Vulkan 1.3, including NVIDIA) |
+| Windows 10/11, 64-bit, NVIDIA | `Haru_{{VERSION}}_x64-cuda-setup.exe` (about 370 MB) | CUDA and Vulkan |
+| Linux x64 | `Haru_{{VERSION}}_amd64.AppImage` (no installation needed) or `Haru_{{VERSION}}_amd64.deb` (Debian, Ubuntu) | Vulkan, CPU |
+| macOS 13.3 or newer, Apple Silicon | `Haru_{{VERSION}}_aarch64.dmg` | Metal |
 
-### Welcher Windows-Installer?
+### Which Windows installer?
 
-Der normale Installer reicht für jede Grafikkarte, auch für NVIDIA. Der CUDA-Installer bringt zusätzlich NVIDIAs CUDA-Laufzeit (cuBLAS) mit, weil der Grafiktreiber nur die Treiberschnittstelle (`nvcuda.dll`) installiert, nicht diese Bibliotheken. Deshalb ist er viel größer. Auf NVIDIA-Karten kann CUDA schneller sein. Die CUDA-Variante ist noch nicht auf echter NVIDIA-Hardware getestet; schlägt sie fehl, wechselt Haru automatisch zu Vulkan. Beide Installer installieren dieselbe App; wer einen über den anderen installiert, ersetzt die Backends.
+The regular installer works for every graphics card, including NVIDIA. The CUDA installer additionally bundles NVIDIA's CUDA runtime (cuBLAS), because the graphics driver only installs the driver interface (`nvcuda.dll`), not these libraries. That is why it is much larger. On NVIDIA cards, CUDA can be faster. The CUDA variant has not yet been tested on real NVIDIA hardware; if it fails, Haru switches to Vulkan automatically. Both installers install the same app; installing one over the other replaces the backends.
 
-## Voraussetzungen
+## Requirements
 
-- **GPU mit mindestens 8 GB Grafikspeicher** (Vulkan 1.3 oder NVIDIA mit CUDA). Ohne passende GPU läuft Haru auf der CPU, deutlich langsamer als Echtzeit. Auf dem Mac teilt sich die GPU den Arbeitsspeicher, dort sind 16 GB sinnvoll.
-- **Modell-Download beim ersten Start: 6,6 GB** (etwa 7 GB freier Speicher). Ein abgebrochener Download setzt beim nächsten Start fort.
-- Kopfhörer klingen am besten.
+- **GPU with at least 8 GB of graphics memory** (Vulkan 1.3 or NVIDIA with CUDA). Without a suitable GPU, Haru runs on the CPU, far slower than real time. On a Mac the GPU shares system memory, where 16 GB is advisable.
+- **Model download on first start: 6.6 GB** (about 7 GB of free space). An interrupted download resumes on the next start.
+- Headphones sound best.
 
-## Installer sind nicht signiert
+## Installers are not signed
 
-Beim ersten Öffnen warnt das Betriebssystem:
+On first launch, the operating system shows a warning:
 
-- **Windows (SmartScreen):** „Der Computer wurde durch Windows geschützt“ → **Weitere Informationen** → **Trotzdem ausführen**.
-- **macOS (Gatekeeper):** Haru aus dem dmg in „Programme“ ziehen, dann im Terminal `xattr -dr com.apple.quarantine /Applications/Haru.app` ausführen und Haru öffnen. Alternativ einmal öffnen, dann **Systemeinstellungen → Datenschutz & Sicherheit → Dennoch öffnen**. Den Mikrofonzugriff beim ersten Gespräch erlauben.
-- **Linux (AppImage):** `chmod +x Haru_{{VERSION}}_amd64.AppImage`, dann starten. Das AppImage braucht FUSE 2 (Ubuntu 24.04: `sudo apt install libfuse2t64`), die Vulkan-Variante einen Vulkan-Treiber (Mesa oder NVIDIA).
+- **Windows (SmartScreen):** "Windows protected your PC" → **More info** → **Run anyway**.
+- **macOS (Gatekeeper):** Drag Haru from the dmg into "Applications", then run `xattr -dr com.apple.quarantine /Applications/Haru.app` in Terminal and open Haru. Alternatively, open it once, then go to **System Settings → Privacy & Security → Open Anyway**. Allow microphone access during the first conversation.
+- **Linux (AppImage):** `chmod +x Haru_{{VERSION}}_amd64.AppImage`, then start it. The AppImage needs FUSE 2 (Ubuntu 24.04: `sudo apt install libfuse2t64`), and the Vulkan variant needs a Vulkan driver (Mesa or NVIDIA).
 
-Prüfsummen: `Haru_{{VERSION}}_SHA256SUMS.txt`.
+Checksums: `Haru_{{VERSION}}_SHA256SUMS.txt`.
