@@ -24,7 +24,7 @@ export const es: Strings = {
     angel: 'Ángel',
     angelSub: 'cálido y atento',
     daemon: 'Demonio',
-    daemonSub: 'cínico y lleno de desprecio',
+    daemonSub: 'traicionero y lleno de maldad',
   },
   hud: {
     mute: 'Silenciar',
@@ -35,6 +35,7 @@ export const es: Strings = {
     latency: 'Latencia',
     mic: 'Micrófono',
   },
+  window: { minimize: 'Minimizar', maximize: 'Maximizar', restore: 'Restaurar', close: 'Cerrar' },
   toast: { retry: 'Reintentar', details: 'Detalles' },
   settings: {
     title: 'Ajustes',

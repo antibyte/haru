@@ -702,6 +702,13 @@ impl Core {
         }
     }
 
+    /// Plays the short sound cue in the running conversation; a no-op while none runs.
+    pub fn play_cue(&self) {
+        if let Some(c) = self.lock().conversation.as_ref() {
+            c.play_cue();
+        }
+    }
+
     pub fn shutdown(&self) {
         let (conv, worker) = {
             let mut g = self.lock();
@@ -715,5 +722,28 @@ impl Core {
         if let Some(mut w) = worker {
             w.shutdown(Duration::from_secs(2));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::paths::HARU_MODEL;
+
+    #[test]
+    fn play_cue_without_conversation_is_a_noop() {
+        let d = tempfile::tempdir().unwrap();
+        let core = Core::new(
+            CoreConfig {
+                settings_path: d.path().join("settings.json"),
+                log_dir: d.path().join("logs"),
+                backends_dir: None,
+                models_dir: d.path().join("models"),
+                model: HARU_MODEL,
+                hf_base: "http://localhost".into(),
+            },
+            Arc::new(|_| {}),
+        );
+        core.play_cue();
     }
 }

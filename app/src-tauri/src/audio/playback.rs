@@ -68,6 +68,8 @@ pub struct PlaybackHandle {
     pub shared: Arc<PlaybackShared>,
     /// Mono copy of every output frame (incl. prebuffer/underrun silence); only when requested.
     pub render_tap: Option<rtrb::Consumer<f32>>,
+    /// Short sound cue samples mixed into the output, ungated (own ring, ~4 s).
+    cue: rtrb::Producer<f32>,
     pushed: u64,
 }
 
@@ -82,6 +84,19 @@ impl PlaybackHandle {
             self.pushed += 1;
         }
         start
+    }
+
+    /// Queues cue samples; returns how many fit. A full ring drops the tail. Cue samples are not part of the
+    /// speech stream (`pushed`/`played` do not count them).
+    pub fn push_cue(&mut self, s: &[f32]) -> usize {
+        let mut n = 0;
+        for &x in s {
+            if self.cue.push(x).is_err() {
+                break;
+            }
+            n += 1;
+        }
+        n
     }
 
     pub fn pushed(&self) -> u64 {
@@ -99,10 +114,13 @@ fn err(msg: MsgKey, detail: impl ToString) -> HaruError {
 }
 
 /// One output callback: the gate decides how many queued samples play, the rest is silence. Every value given to
-/// `write` (incl. prebuffer/underrun silence) is also pushed to `tap`. Returns (popped, tap_dropped).
+/// `write` (incl. prebuffer/underrun silence) is also pushed to `tap`. The optional cue ring is mixed in per frame
+/// (not gated: it plays during prebuffer/underrun silence too); the sum is clamped to [-1, 1] and the mixed value
+/// goes to `write` and `tap`. Returns (speech popped, tap_dropped).
 pub fn render_block(
     gate: &mut JitterGate,
     consumer: &mut rtrb::Consumer<f32>,
+    mut cue: Option<&mut rtrb::Consumer<f32>>,
     mut tap: Option<&mut rtrb::Producer<f32>>,
     frames: usize,
     mut write: impl FnMut(usize, f32),
@@ -110,7 +128,12 @@ pub fn render_block(
     let n = gate.decide(consumer.slots(), frames);
     let mut dropped = 0u64;
     for i in 0..frames {
-        let v = if i < n { consumer.pop().unwrap_or(0.0) } else { 0.0 };
+        let speech = if i < n { consumer.pop().unwrap_or(0.0) } else { 0.0 };
+        let c = match cue.as_deref_mut() {
+            Some(q) => q.pop().unwrap_or(0.0),
+            None => 0.0,
+        };
+        let v = if c == 0.0 { speech } else { (speech + c).clamp(-1.0, 1.0) };
         write(i, v);
         if let Some(t) = tap.as_deref_mut() {
             if t.push(v).is_err() {
@@ -125,6 +148,7 @@ fn build_typed<T>(
     dev: &cpal::Device,
     config: &cpal::StreamConfig,
     mut consumer: rtrb::Consumer<f32>,
+    mut cue: rtrb::Consumer<f32>,
     mut tap: Option<rtrb::Producer<f32>>,
     shared: Arc<PlaybackShared>,
     prebuffer: usize,
@@ -141,7 +165,7 @@ where
             let ts = info.timestamp();
             store_latency(&shared.output_latency_us, ts.playback.duration_since(&ts.callback));
             let frames = data.len() / channels;
-            let (n, dropped) = render_block(&mut gate, &mut consumer, tap.as_mut(), frames, |i, v| {
+            let (n, dropped) = render_block(&mut gate, &mut consumer, Some(&mut cue), tap.as_mut(), frames, |i, v| {
                 let s = <T as FromSample<f32>>::from_sample_(v);
                 for c in &mut data[i * channels..(i + 1) * channels] {
                     *c = s;
@@ -174,6 +198,7 @@ pub fn build_playback(
     let format = supported.sample_format();
     let config: cpal::StreamConfig = supported.into();
     let (producer, consumer) = rtrb::RingBuffer::new(rate as usize * 4);
+    let (cue_producer, cue_consumer) = rtrb::RingBuffer::new(rate as usize * 4);
     let shared = Arc::new(PlaybackShared::default());
     let (tap_producer, tap_consumer) = if render_tap {
         let (p, c) = rtrb::RingBuffer::new(rate as usize * 2);
@@ -184,9 +209,9 @@ pub fn build_playback(
     let prebuffer = 3200 * rate as usize / 24000 * prebuffer_frames;
     let s = shared.clone();
     let stream = match format {
-        SampleFormat::F32 => build_typed::<f32>(dev, &config, consumer, tap_producer, s, prebuffer),
-        SampleFormat::I16 => build_typed::<i16>(dev, &config, consumer, tap_producer, s, prebuffer),
-        SampleFormat::U16 => build_typed::<u16>(dev, &config, consumer, tap_producer, s, prebuffer),
+        SampleFormat::F32 => build_typed::<f32>(dev, &config, consumer, cue_consumer, tap_producer, s, prebuffer),
+        SampleFormat::I16 => build_typed::<i16>(dev, &config, consumer, cue_consumer, tap_producer, s, prebuffer),
+        SampleFormat::U16 => build_typed::<u16>(dev, &config, consumer, cue_consumer, tap_producer, s, prebuffer),
         other => {
             return Err(err(MsgKey::OutputFormatUnsupported, format!("sample format {other:?}")));
         }
@@ -195,7 +220,7 @@ pub fn build_playback(
     stream
         .play()
         .map_err(|e| err(MsgKey::OutputStartFailed, e))?;
-    Ok((stream, PlaybackHandle { rate, producer, shared, render_tap: tap_consumer, pushed: 0 }))
+    Ok((stream, PlaybackHandle { rate, producer, shared, render_tap: tap_consumer, cue: cue_producer, pushed: 0 }))
 }
 
 #[cfg(test)]
@@ -243,7 +268,7 @@ mod tests {
         written: &mut Vec<f32>,
     ) -> u64 {
         let mut out = vec![0.0f32; frames];
-        let (_, dropped) = render_block(gate, cons, Some(tap), frames, |i, v| out[i] = v);
+        let (_, dropped) = render_block(gate, cons, None, Some(tap), frames, |i, v| out[i] = v);
         written.extend_from_slice(&out);
         dropped
     }
@@ -286,6 +311,94 @@ mod tests {
         let mut written = Vec::new();
         assert_eq!(drive(&mut gate, &mut cons, &mut tp, 256, &mut written), 0);
         assert_eq!(drive(&mut gate, &mut cons, &mut tp, 256, &mut written), 212);
+    }
+
+    /// One block with a cue ring; returns (written, tapped).
+    fn mix(
+        gate: &mut JitterGate,
+        cons: &mut rtrb::Consumer<f32>,
+        cue: &mut rtrb::Consumer<f32>,
+        tap: &mut rtrb::Producer<f32>,
+        tc: &mut rtrb::Consumer<f32>,
+        frames: usize,
+    ) -> (Vec<f32>, Vec<f32>) {
+        let mut out = vec![0.0f32; frames];
+        render_block(gate, cons, Some(cue), Some(tap), frames, |i, v| out[i] = v);
+        let mut tapped = Vec::new();
+        while let Ok(x) = tc.pop() {
+            tapped.push(x);
+        }
+        (out, tapped)
+    }
+
+    #[test]
+    fn cue_is_mixed_into_output_and_tap() {
+        let (mut sp, mut sc) = rtrb::RingBuffer::<f32>::new(100);
+        let (mut cp, mut cc) = rtrb::RingBuffer::<f32>::new(100);
+        let (mut tp, mut tc) = rtrb::RingBuffer::<f32>::new(100);
+        let mut gate = JitterGate::new(0);
+        for _ in 0..8 {
+            sp.push(0.25).unwrap();
+        }
+        for i in 0..8 {
+            cp.push(i as f32 * 0.05).unwrap();
+        }
+        let (out, tapped) = mix(&mut gate, &mut sc, &mut cc, &mut tp, &mut tc, 8);
+        let want: Vec<f32> = (0..8).map(|i| 0.25 + i as f32 * 0.05).collect();
+        assert_eq!(out, want);
+        assert_eq!(tapped, want);
+    }
+
+    #[test]
+    fn cue_plays_during_prebuffer_silence() {
+        let (mut sp, mut sc) = rtrb::RingBuffer::<f32>::new(100);
+        let (mut cp, mut cc) = rtrb::RingBuffer::<f32>::new(100);
+        let (mut tp, mut tc) = rtrb::RingBuffer::<f32>::new(100);
+        let mut gate = JitterGate::new(50);
+        for _ in 0..10 {
+            sp.push(0.5).unwrap(); // below the prebuffer: speech stays gated
+        }
+        for _ in 0..4 {
+            cp.push(0.3).unwrap();
+        }
+        let (out, tapped) = mix(&mut gate, &mut sc, &mut cc, &mut tp, &mut tc, 6);
+        assert_eq!(out, vec![0.3, 0.3, 0.3, 0.3, 0.0, 0.0]);
+        assert_eq!(tapped, out);
+        assert_eq!(sc.slots(), 10, "speech untouched");
+    }
+
+    #[test]
+    fn mixed_sum_is_clamped() {
+        let (mut sp, mut sc) = rtrb::RingBuffer::<f32>::new(10);
+        let (mut cp, mut cc) = rtrb::RingBuffer::<f32>::new(10);
+        let (mut tp, mut tc) = rtrb::RingBuffer::<f32>::new(10);
+        let mut gate = JitterGate::new(0);
+        for x in [0.8, -0.8, 0.2] {
+            sp.push(x).unwrap();
+        }
+        for x in [0.7, -0.7, 0.2] {
+            cp.push(x).unwrap();
+        }
+        let (out, tapped) = mix(&mut gate, &mut sc, &mut cc, &mut tp, &mut tc, 3);
+        assert_eq!(out, vec![1.0, -1.0, 0.4]);
+        assert_eq!(tapped, out);
+    }
+
+    #[test]
+    fn full_cue_ring_drops_the_tail() {
+        let (cp, _cc) = rtrb::RingBuffer::<f32>::new(5);
+        let (producer, _c) = rtrb::RingBuffer::<f32>::new(5);
+        let mut h = PlaybackHandle {
+            rate: 48000,
+            producer,
+            shared: Arc::new(PlaybackShared::default()),
+            render_tap: None,
+            cue: cp,
+            pushed: 0,
+        };
+        assert_eq!(h.push_cue(&[0.1; 8]), 5);
+        assert_eq!(h.push_cue(&[0.1; 2]), 0);
+        assert_eq!(h.pushed(), 0);
     }
 
     #[test]

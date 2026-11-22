@@ -11,6 +11,7 @@ use crate::audio::capture::CaptureHandle;
 use crate::audio::echo_sim::{EchoSim, Room};
 use crate::audio::engine::{AudioEngine, PREBUFFER_FRAMES};
 use crate::audio::features::{Analyzer, BLOCK, MODEL_BANDS};
+use crate::audio::cue::cue_samples;
 use crate::audio::playback::{render_block, JitterGate, PlaybackHandle, PlaybackShared};
 use crate::audio::resample::FrameResampler;
 use crate::audio::voice_fx::{effective_style, VoiceFx, VoiceStyle};
@@ -308,6 +309,8 @@ struct VirtualDevice {
     ring_c: Option<rtrb::Consumer<f32>>,
     tap_p: Option<rtrb::Producer<f32>>,
     tap_c: Option<rtrb::Consumer<f32>>,
+    cue_p: Option<rtrb::Producer<f32>>,
+    cue_c: Option<rtrb::Consumer<f32>>,
     shared: Arc<PlaybackShared>,
     room: Arc<Mutex<Room>>,
 }
@@ -320,12 +323,27 @@ struct Out {
     real: Option<PlaybackHandle>,
     /// Virtual acoustic loop: the ring the virtual device consumes (instead of just counting).
     vring: Option<rtrb::Producer<f32>>,
+    /// Virtual acoustic loop: the cue ring the virtual device mixes in.
+    vcue: Option<rtrb::Producer<f32>>,
     /// Test seam: every sample pushed to the playback ring.
     #[cfg(test)]
     tap: Option<Arc<Mutex<Vec<f32>>>>,
 }
 
 impl Out {
+    /// Queues a short sound cue for mixing into the output (ungated, not part of the speech stream).
+    fn push_cue(&mut self, s: &[f32]) {
+        if let Some(h) = &mut self.real {
+            h.push_cue(s);
+        } else if let Some(c) = &mut self.vcue {
+            for &x in s {
+                if c.push(x).is_err() {
+                    break;
+                }
+            }
+        }
+    }
+
     fn push(&mut self, s: &[f32]) -> u64 {
         #[cfg(test)]
         if let Some(t) = &self.tap {
@@ -397,6 +415,7 @@ fn spawn_virtual_device(
     rate: u32,
     shared: Arc<PlaybackShared>,
     mut consumer: rtrb::Consumer<f32>,
+    mut cue: rtrb::Consumer<f32>,
     mut tap: Option<rtrb::Producer<f32>>,
     room: Arc<Mutex<Room>>,
     stop: Arc<Inner>,
@@ -412,7 +431,7 @@ fn spawn_virtual_device(
                 let need = due - done;
                 if need >= (rate / 100) as u64 {
                     let mut block = Vec::with_capacity(need as usize);
-                    let (n, dropped) = render_block(&mut gate, &mut consumer, tap.as_mut(), need as usize, |_, v| block.push(v));
+                    let (n, dropped) = render_block(&mut gate, &mut consumer, Some(&mut cue), tap.as_mut(), need as usize, |_, v| block.push(v));
                     shared.played.fetch_add(n as u64, Ordering::Relaxed);
                     if dropped > 0 {
                         shared.tap_dropped.fetch_add(dropped, Ordering::Relaxed);
@@ -440,6 +459,8 @@ struct Inner {
     terminal_cv: Condvar,
     end_fired: AtomicBool,
     hanging_up: AtomicBool,
+    /// A sound cue was requested; the dispatch thread (owner of the playback ring) queues it.
+    cue_pending: AtomicBool,
     /// We sent a `cancel` because of the lag limit (a later worker `cancelled` is then LagLimit).
     lag_cancelled: AtomicBool,
     frames: AtomicU64,
@@ -701,6 +722,11 @@ fn dispatch_loop(
                 .with_detail("no frame 0 of the next segment within 30 s")
                 .backend_failure());
         }
+        if inner.cue_pending.swap(false, Ordering::AcqRel) {
+            if let Some(c) = cue_samples(out.rate) {
+                out.push_cue(&c);
+            }
+        }
         let buffered = out.pushed.load(Ordering::Acquire).saturating_sub(out.shared.played.load(Ordering::Relaxed));
         let pad = flush_padding(buffered, prebuffer, out.shared.playing.load(Ordering::Relaxed), last_push.elapsed(), ended);
         if pad > 0 {
@@ -829,6 +855,7 @@ impl Conversation {
             } else {
                 (None, None)
             };
+            let (cue_p, cue_c) = rtrb::RingBuffer::new(VIRTUAL_RATE as usize * 4);
             let shared = new_shared_playback();
             // What a device reports through its callback timestamps: the output latency.
             store_latency(&shared.output_latency_us, Some(Duration::from_secs_f64(sim.device_latency_ms.max(0.0) as f64 / 1000.0)));
@@ -838,7 +865,7 @@ impl Conversation {
                 sim.delay_ms + sim.device_latency_ms,
                 if want_aec { "on" } else { "off" }
             );
-            vdev = Some(VirtualDevice { ring_p: Some(ring_p), ring_c: Some(ring_c), tap_p, tap_c, shared, room: Arc::new(Mutex::new(room)) });
+            vdev = Some(VirtualDevice { ring_p: Some(ring_p), ring_c: Some(ring_c), tap_p, tap_c, cue_p: Some(cue_p), cue_c: Some(cue_c), shared, room: Arc::new(Mutex::new(room)) });
         }
 
         // Echo cancellation: reference = render tap of the real output, processed on the mic pump thread.
@@ -877,6 +904,7 @@ impl Conversation {
             terminal_cv: Condvar::new(),
             end_fired: AtomicBool::new(false),
             hanging_up: AtomicBool::new(false),
+            cue_pending: AtomicBool::new(false),
             lag_cancelled: AtomicBool::new(false),
             frames: AtomicU64::new(0),
             timeline: Mutex::new(FrameTimeline::new()),
@@ -897,6 +925,7 @@ impl Conversation {
                 VIRTUAL_RATE,
                 shared.clone(),
                 v.ring_c.take().expect("virtual ring consumer"),
+                v.cue_c.take().expect("virtual cue consumer"),
                 v.tap_p.take(),
                 v.room.clone(),
                 inner_probe.clone(),
@@ -907,6 +936,7 @@ impl Conversation {
                 pushed,
                 real: None,
                 vring: v.ring_p.take(),
+                vcue: v.cue_p.take(),
                 #[cfg(test)]
                 tap: io.push_tap.clone(),
             }
@@ -921,6 +951,7 @@ impl Conversation {
                 pushed,
                 real: None,
                 vring: None,
+                vcue: None,
                 #[cfg(test)]
                 tap: io.push_tap.clone(),
             }
@@ -932,6 +963,7 @@ impl Conversation {
                 pushed: Arc::new(AtomicU64::new(0)),
                 real: Some(p),
                 vring: None,
+                vcue: None,
                 #[cfg(test)]
                 tap: io.push_tap.clone(),
             }
@@ -1021,6 +1053,12 @@ impl Conversation {
 
     pub fn set_muted(&self, muted: bool) {
         self.inner.mic.muted.store(muted, Ordering::Relaxed);
+    }
+
+    /// Requests a short sound cue mixed into the output now. Non-blocking: sets a flag the dispatch thread
+    /// (owner of the playback handle) polls at least every `TICK * 3`.
+    pub fn play_cue(&self) {
+        self.inner.cue_pending.store(true, Ordering::Release);
     }
 
     /// Sends `hang_up`, waits up to `timeout` for `end`, otherwise cancels; then stops threads and audio.

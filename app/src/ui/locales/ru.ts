@@ -24,7 +24,7 @@ export const ru: Strings = {
     angel: 'Ангел',
     angelSub: 'тёплый и заботливый',
     daemon: 'Демон',
-    daemonSub: 'циничный и полный презрения',
+    daemonSub: 'коварный и полный злобы',
   },
   hud: {
     mute: 'Выкл. микрофон',
@@ -35,6 +35,7 @@ export const ru: Strings = {
     latency: 'Задержка',
     mic: 'Микрофон',
   },
+  window: { minimize: 'Свернуть', maximize: 'Развернуть', restore: 'Восстановить', close: 'Закрыть' },
   toast: { retry: 'Повторить', details: 'Подробности' },
   settings: {
     title: 'Настройки',

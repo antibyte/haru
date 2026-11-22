@@ -3,7 +3,8 @@ import { Labels, S } from './strings';
 export type HudAction = 'mute' | 'settings' | 'fullscreen' | 'stop';
 
 const SEGMENTS = 8;
-const IDLE_MS = 3000;
+/** Idle time before the HUD and the window buttons dim. */
+export const IDLE_MS = 3000;
 const LATENCY_WARN_MS = 500;
 const LATENCY_UPDATE_MS = 250;
 

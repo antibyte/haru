@@ -76,4 +76,5 @@ export class TauriClient implements HaruClient {
   }
   stopConversation(): Promise<void> { return call('stop_conversation'); }
   setMuted(muted: boolean): Promise<void> { return call('set_muted', { muted }); }
+  playCue(): Promise<void> { return call('play_cue'); }
 }

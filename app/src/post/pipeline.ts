@@ -61,6 +61,8 @@ export interface HeadPostInputs {
   visMax?: number;
   /** per-head skin grade for textured heads (undefined = neutral: skin = albedo) */
   grade?: SkinGrade;
+  /** moment only: eye positions in UV (y up): left x, y, right x, y */
+  eyes?: readonly [number, number, number, number];
   /** debug (?facedebug): show the face without ink gate and dissolve mask */
   debug?: boolean;
 }
@@ -154,6 +156,37 @@ export class PostFX {
       this.ink.push(createTarget(this.gl, Math.max(2, dye.width >> i), Math.max(2, dye.height >> i), 'rgba16f', 'linear'));
     }
     this.inkForDye = key;
+  }
+
+  /**
+   * The moment: only the head G-buffer (albedo + normals + mouth cavity) lit by a harsh key, opaque, onto the screen.
+   * Skips the dye, bloom, rays and ink chain. Cheap: one fullscreen draw.
+   */
+  renderMoment(head: HeadPostInputs, timeSec: number): void {
+    const gl = this.gl;
+    gl.disable(gl.BLEND);
+    gl.disable(gl.SCISSOR_TEST);
+    const p = this.pComposite;
+    p.bind();
+    gl.uniform1f(p.uniforms['uMoment'], 1);
+    gl.uniform1f(p.uniforms['uAspect'], this.w / this.h);
+    gl.uniform1f(p.uniforms['uTime'], timeSec);
+    const ey = head.eyes ?? [0.4, 0.6, 0.6, 0.6];
+    gl.uniform4f(p.uniforms['uMomentEyes'], ey[0], ey[1], ey[2], ey[3]);
+    const g = head.grade ?? NEUTRAL_SKIN;
+    gl.uniform1f(p.uniforms['uSkinGamma'], g.gamma);
+    gl.uniform1f(p.uniforms['uSkinLift'], g.lift);
+    gl.uniform3f(p.uniforms['uSkinTint'], g.tint[0], g.tint[1], g.tint[2]);
+    gl.uniform1f(p.uniforms['uSkinSat'], g.saturation);
+    gl.activeTexture(gl.TEXTURE3);
+    gl.bindTexture(gl.TEXTURE_2D, head.texture);
+    gl.uniform1i(p.uniforms['uHead'], 3);
+    gl.activeTexture(gl.TEXTURE6);
+    gl.bindTexture(gl.TEXTURE_2D, head.albedo ?? head.texture);
+    gl.uniform1i(p.uniforms['uHeadAlb'], 6);
+    gl.activeTexture(gl.TEXTURE0);
+    drawQuad(gl, null, [this.w, this.h]);
+    gl.uniform1f(p.uniforms['uMoment'], 0); // the normal path never sets it
   }
 
   /** Renders the HDR dye field to the default framebuffer. */

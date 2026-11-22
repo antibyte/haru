@@ -24,7 +24,7 @@ export const en: Strings = {
     angel: 'Angel',
     angelSub: 'warm and caring',
     daemon: 'Demon',
-    daemonSub: 'cynical and full of contempt',
+    daemonSub: 'treacherous and full of malice',
   },
   hud: {
     mute: 'Mute',
@@ -35,6 +35,7 @@ export const en: Strings = {
     latency: 'Latency',
     mic: 'Microphone',
   },
+  window: { minimize: 'Minimize', maximize: 'Maximize', restore: 'Restore', close: 'Close' },
   toast: { retry: 'Try again', details: 'Details' },
   settings: {
     title: 'Settings',

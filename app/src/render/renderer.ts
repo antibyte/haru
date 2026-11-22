@@ -72,6 +72,10 @@ export class Renderer {
   private readonly modelFirstOff: boolean;
   /** ?debug&facedebug shows the whole face (no ink gate / dissolve) to inspect shading and lipsync. */
   private readonly faceDebug: boolean;
+  /** ?debug&momentshow keeps the close-up on screen (capture / shading work); the HUD is hidden like in the real thing. */
+  private readonly momentShow: boolean;
+  /** ms of the close-up still to show (0 = normal frames); Infinity with ?momentshow */
+  private momentLeft = 0;
   private readonly modelFirst = new ModelFirstController();
   private budget: RenderBudget = BUDGET_TIERS[0];
   private latencyMs: number | null = null;
@@ -116,6 +120,7 @@ export class Renderer {
     this.forcedLevel = forced;
     this.faceDebug = this.debug && this.params.has('facedebug');
     this.modelFirstOff = this.debug && this.params.get('modelfirst') === 'off';
+    this.momentShow = this.debug && this.params.has('momentshow');
     this.quality = new QualityController(forced ?? 'auto', START_LEVEL);
     this.level = this.quality.level;
     const q = QUALITY_TABLE[this.level];
@@ -130,6 +135,10 @@ export class Renderer {
     const head = this.debug ? parseHeadOverride(this.params.get('head')) : null;
     this.face = new FaceLayer(this.glc, undefined, TEXTURED_HEADS, head?.key ?? null);
     if (this.debug) this.setupDebug();
+    if (this.momentShow) {
+      this.momentLeft = Infinity;
+      document.documentElement.classList.add('is-moment');
+    }
   }
 
   start(): void {
@@ -194,6 +203,8 @@ export class Renderer {
       this.resizeAll();
     }
 
+    if (this.momentLeft > 0 && this.drawMoment(frameMs, now)) return;
+
     const f = this.pendingViz;
     this.pendingViz = null;
     this.audio = this.smoother.update(this.mode === 'talking' ? f : null, frameMs);
@@ -222,7 +233,36 @@ export class Renderer {
     this.updateFps(now);
   }
 
+  /** One close-up frame (hard cut, nothing else is simulated or drawn). False = no picture possible, draw normally. */
+  private drawMoment(frameMs: number, now: number): boolean {
+    const post = this.face.renderMoment(this.canvas.width, this.canvas.height, this.canvas.width / Math.max(1, this.canvas.height), this.timeSec);
+    if (!post) {
+      if (!this.momentShow) this.momentLeft = 0; // the head is gone: give up (?momentshow waits for it)
+      return false;
+    }
+    this.post.renderMoment(post, this.timeSec);
+    this.momentLeft -= frameMs;
+    if (this.momentLeft <= 0) {
+      this.momentLeft = 0;
+      this.face.endMoment();
+    }
+    this.updateFps(now);
+    return true;
+  }
+
   // ------------------------------------------------------------------ public control
+
+  /**
+   * The moment: for `ms` milliseconds only the daemon head is drawn, in close-up (hard cut in and out).
+   * Returns false when the daemon head is not loaded (nothing is shown then).
+   */
+  startMoment(ms: number): boolean {
+    if (this.noPost || !this.face.momentReady) return false;
+    this.momentLeft = Math.max(1, ms);
+    return true;
+  }
+  /** Keeps the daemon head loaded while a moment is pending, even with the face switched off. */
+  keepFaceReady(on: boolean): void { this.face.setKeepReady(on); }
 
   setMode(m: CouplingMode): void {
     if (m !== this.mode) this.modelFirst.reset(); // the policy is only active while talking

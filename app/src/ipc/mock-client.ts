@@ -188,6 +188,7 @@ export class MockClient implements HaruClient {
   }
 
   async setMuted(muted: boolean): Promise<void> { this.muted = muted; }
+  async playCue(): Promise<void> {}
 
   private stopTimer(): void {
     if (this.timer !== null) { clearInterval(this.timer); this.timer = null; }

@@ -220,6 +220,25 @@ describe('FaceLayer head loading', () => {
     expect([...priv.pass.weights].map((v) => Math.round(v * 1000) / 1000)).toEqual([...expected]);
   });
 
+  it('keeps the daemon head loadable with the face switched off, only when asked to', async () => {
+    const off = new FaceLayer(glc, vi.fn());
+    off.setEnabled(false);
+    talking(off, 'daemon', 'female');
+    await Promise.resolve();
+    expect(off.momentReady).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+    off.setKeepReady(true);
+    await vi.waitFor(() => expect(off.momentReady).toBe(true));
+    expect(requested()).toEqual(['daemon.glb']);
+  });
+
+  it('the picture needs the daemon head: an angel head is not a moment', async () => {
+    const layer = talking(new FaceLayer(glc, vi.fn()), 'angel', 'female');
+    await vi.waitFor(() => expect(layer.head).toBe('angel-female'));
+    expect(layer.momentReady).toBe(false);
+    expect(layer.renderMoment(100, 100, 1, 0)).toBeNull();
+  });
+
   it('a debug override pins the head regardless of persona and voice', async () => {
     const layer = talking(new FaceLayer(glc, vi.fn(), TEXTURED_HEADS, 'angel-female'), 'daemon', 'male');
     await vi.waitFor(() => expect(layer.head).toBe('angel-female'));

@@ -30,6 +30,7 @@ sonora = "0.3.0"     # WebRTC APM port (AEC3/NS/AGC2), pure Rust; no default fea
 fs2 = "0.4.3"
 hound = "3.5.1"
 signalsmith-stretch = { path = "vendor/signalsmith-stretch" }  # vendored MIT crate, see vendor/signalsmith-stretch/README-VENDOR.md
+tauri-plugin-window-state = "2"
 
 [dev-dependencies]
 tiny_http = "0.12.0"

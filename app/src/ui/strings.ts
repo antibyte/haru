@@ -31,6 +31,11 @@ const formats = new Map<string, Intl.NumberFormat>();
 
 export function getLanguage(): Language { return language; }
 
+const languageListeners: (() => void)[] = [];
+
+/** Calls `cb` after every `setLanguage` (for components that live outside App, e.g. the title bar). */
+export function onLanguageChange(cb: () => void): void { languageListeners.push(cb); }
+
 /** Primary subtag of a language tag ("pt-BR", "zh-Hant-TW", "en_GB.UTF-8", "de_DE@euro"), like Rust; otherwise English. */
 export function resolveLanguage(code: string | null | undefined): Language {
   const primary = (code ?? '').trim().split(/[-_.@]/)[0].toLowerCase();
@@ -45,6 +50,7 @@ export function setLanguage(code: string | null | undefined): Language {
   S = table ?? TABLES[FALLBACK_LANGUAGE] ?? en;
   formats.clear();
   if (typeof document !== 'undefined') document.documentElement.lang = locale;
+  for (const cb of languageListeners) cb();
   return language;
 }
 

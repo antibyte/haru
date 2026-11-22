@@ -103,7 +103,7 @@ export const de = {
     angel: 'Engel',
     angelSub: 'warm und zugewandt',
     daemon: 'Dämon',
-    daemonSub: 'zynisch und voller Verachtung',
+    daemonSub: 'hinterhältig und voller Bosheit',
   },
   hud: {
     mute: 'Mute',
@@ -114,6 +114,7 @@ export const de = {
     latency: 'Latenz',
     mic: 'Mikrofon',
   },
+  window: { minimize: 'Minimieren', maximize: 'Maximieren', restore: 'Verkleinern', close: 'Schließen' },
   toast: { retry: 'Erneut versuchen', details: 'Details' },
   settings: {
     title: 'Einstellungen',

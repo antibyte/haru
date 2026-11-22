@@ -72,4 +72,5 @@ export interface HaruClient {
   startConversation(persona: Persona, onViz: (f: VizFrame) => void): Promise<void>;
   stopConversation(): Promise<void>;
   setMuted(muted: boolean): Promise<void>;
+  playCue(): Promise<void>;
 }

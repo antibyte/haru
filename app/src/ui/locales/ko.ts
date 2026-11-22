@@ -27,7 +27,7 @@ export const ko: Strings = {
     angel: '천사',
     angelSub: '따뜻하고 다정한',
     daemon: '악마',
-    daemonSub: '냉소적이고 경멸로 가득한',
+    daemonSub: '음흉하고 악의로 가득한',
   },
   hud: {
     mute: '음소거',
@@ -38,6 +38,7 @@ export const ko: Strings = {
     latency: '지연 시간',
     mic: '마이크',
   },
+  window: { minimize: '최소화', maximize: '최대화', restore: '이전 크기로', close: '닫기' },
   toast: { retry: '다시 시도', details: '세부 정보' },
   settings: {
     title: '설정',

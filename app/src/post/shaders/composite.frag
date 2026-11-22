@@ -30,6 +30,8 @@ uniform vec3 uSkinTint;
 uniform float uSkinSat;
 uniform float uEmber;       // 0 = neutral look (exactly as before), 1 = daemon embers
 uniform float uHeadDebug;   // ?facedebug: show the whole face (no ink gate / dissolve)
+uniform vec4 uMomentEyes;   // moment: eye positions in UV (xy = left, zw = right)
+uniform float uMoment;      // 1 = only the close-up head, opaque, harsh light (no fluid, ink, bloom, rays); 0 = normal frame
 in vec2 vUv;
 out vec4 o;
 
@@ -80,7 +82,60 @@ vec3 inkBlur(vec2 uv) {
     + texture(uInkNear, uv + vec2(e.x, -e.y)).rgb + texture(uInkNear, uv + vec2(-e.x, -e.y)).rgb) / 6.0;
 }
 
+// The close-up: dark crimson skin lit from below, thin hot rim, glowing eyes, a faint red glow deep in the open mouth.
+vec3 momentFace(vec2 uv) {
+  vec4 g = texture(uHead, uv);
+  float cov = smoothstep(0.0, 0.18, g.b);
+  vec3 col = vec3(0.0);
+  if (cov >= 0.002) {
+    vec3 n = vec3(g.rg, sqrt(max(1.0 - dot(g.rg, g.rg), 0.0)));
+    vec4 alb = texture(uHeadAlb, uv);
+    vec3 skin = pow(max(alb.rgb / max(alb.a, 1e-3), 0.0), vec3(uSkinGamma)) * uSkinLift;
+    // only the luminance of the albedo (detail), flattened so texture blotches do not read as shadow, then crimson
+    float sl = mix(0.3, clamp(lum(skin) * 1.4, 0.0, 1.0), 0.7);
+    vec3 crimson = vec3(0.75, 0.028, 0.018);
+    vec3 base = sl * crimson;
+    vec3 key = normalize(vec3(0.04, -0.72, 0.69));                   // from below, slightly in front, centred
+    float d = smoothstep(0.18, 0.85, dot(n, key));
+    float top = smoothstep(0.2, -0.6, n.y);                          // faint extra from the lower planes only
+    col = base * (0.004 + 1.1 * d * d * d + 0.15 * top * d);
+    col += vec3(1.0, 0.16, 0.02) * pow(1.0 - n.z, 3.0) * 0.3;       // thin hot rim
+    col *= mix(0.5, 1.0, clamp((g.b - 0.35) / 0.65, 0.0, 1.0));
+    // mouth: black with a faint red glow from deep inside, toward the centre of the cavity
+    float cav = g.a;
+    float inner = 0.0;
+    for (int i = 0; i < 4; i++) {
+      float a = float(i) * 1.5708 + 0.785;
+      inner += texture(uHead, uv + vec2(cos(a), sin(a)) * uHeadTexel * 9.0).a;
+    }
+    float deep = smoothstep(0.9, 1.0, 0.25 * inner) * cav;
+    col = col * (1.0 - 0.97 * cav) + vec3(0.5, 0.03, 0.01) * deep * 0.03 * cav;
+    col = col * cov;
+  }
+  // eyes: emissive hot orange-yellow irises with a halo (radius from the eye distance)
+  vec2 e0 = vec2(uMomentEyes.x * uAspect, uMomentEyes.y);
+  vec2 e1 = vec2(uMomentEyes.z * uAspect, uMomentEyes.w);
+  float ed = distance(e0, e1);
+  vec2 p = vec2(uv.x * uAspect, uv.y);
+  float r0 = distance(p, e0) / ed, r1 = distance(p, e1) / ed;
+  float core = exp(-r0 * r0 / 0.0042) + exp(-r1 * r1 / 0.0042);
+  float halo = exp(-r0 * r0 / 0.03) + exp(-r1 * r1 / 0.03);
+  col += vec3(1.0, 0.75, 0.2) * core * 2.2 + vec3(1.0, 0.22, 0.03) * halo * 0.9;
+  return col;
+}
+
 void main() {
+  if (uMoment > 0.5) {
+    vec2 mu = vUv;
+    vec3 c = momentFace(mu);
+    c = c / (1.0 + 0.35 * c);
+    vec2 dv = (mu - 0.5) * vec2(uAspect, 1.0);
+    c *= mix(1.0, smoothstep(0.95, 0.3, length(dv)), 0.6);
+    c = pow(max(c, 0.0), vec3(1.0 / 2.2));
+    c += (hash12(gl_FragCoord.xy + fract(uTime) * 91.7) - 0.5) * 0.03 * smoothstep(0.0, 0.1, lum(c));
+    o = vec4(c, 1.0);
+    return;
+  }
   vec2 uv = vUv;
   // --- head G-buffer (glass head in fog): coverage, normal and refraction of the dye lookup inside the silhouette
   vec4 hg = vec4(0.0);

@@ -22,6 +22,15 @@ export interface HeadMotion {
   tilt: number;
   /** 0..1 speech activity: scales the micro-motion a little */
   speech: number;
+  /** the close-up of the moment: camera distance factor and a shake offset in fractions of the visible height */
+  closeup?: Closeup;
+}
+
+/** Reused every frame (no allocation): `zoom` scales the camera distance, `shakeX` / `shakeY` offset the view. */
+export interface Closeup {
+  zoom: number;
+  shakeX: number;
+  shakeY: number;
 }
 
 /**
@@ -156,13 +165,15 @@ export class HeadPass {
     const tanH = Math.tan(FOV / 2);
     let dist = headH / FACE_FILL / (2 * tanH);
     if (aspect < 0.8) dist *= 0.8 / aspect; // portrait: keep the face inside the width
+    const close = m.closeup;
+    if (close) dist *= close.zoom;
     const visH = 2 * dist * tanH;
 
     const t = m.timeSec;
-    const yaw = 8 * DEG * (0.62 * Math.sin((2 * Math.PI * t) / 17 + 0.3) + 0.38 * Math.sin((2 * Math.PI * t) / 9.3 + 1.7));
-    const pitch = 3 * DEG * Math.sin((2 * Math.PI * t) / 13 + 2.1) + m.nod;
-    const roll = 1.2 * DEG * Math.sin((2 * Math.PI * t) / 21 + 0.9) + m.tilt;
-    const breath = Math.sin((2 * Math.PI * t) / 4.6);
+    const yaw = close ? 0 : 8 * DEG * (0.62 * Math.sin((2 * Math.PI * t) / 17 + 0.3) + 0.38 * Math.sin((2 * Math.PI * t) / 9.3 + 1.7));
+    const pitch = close ? 0 : 3 * DEG * Math.sin((2 * Math.PI * t) / 13 + 2.1) + m.nod;
+    const roll = close ? 0 : 1.2 * DEG * Math.sin((2 * Math.PI * t) / 21 + 0.9) + m.tilt;
+    const breath = close ? 0 : Math.sin((2 * Math.PI * t) / 4.6);
     const s = 1 + 0.007 * breath;
     const lift = visH * LIFT + 0.005 * breath;
 
@@ -172,7 +183,13 @@ export class HeadPass {
     mv = multiply(multiply(rotationY(yaw), multiply(rotationX(pitch), rotationZ(roll))), mv);
     mv = multiply(translation(pivot[0], pivot[1], pivot[2]), mv);
     mv = multiply(scaling(s), mv);
-    mv = multiply(translation(0, -cy + lift, -dist), mv);
+    if (close) {
+      // centre on the face between the eyes and the mouth; the shake moves the view by a fraction of the visible height
+      const fy = (lm.eyeL[1] + lm.eyeR[1]) / 4 + lm.mouth[1] / 2 - 0.05;
+      mv = multiply(translation(close.shakeX * visH, -fy + close.shakeY * visH, -dist), mv);
+    } else {
+      mv = multiply(translation(0, -cy + lift, -dist), mv);
+    }
     const proj = perspective(FOV, aspect, Math.max(0.05, dist - 1.2), dist + 1.2);
     const mvp = multiply(proj, mv);
 

@@ -77,6 +77,13 @@ pub async fn set_muted(core: CoreState<'_>, muted: bool) -> Result<(), HaruError
     Ok(())
 }
 
+/// Mixes a short sound cue into the output of the running conversation; Ok(()) and nothing else when none runs.
+#[tauri::command]
+pub async fn play_cue(core: CoreState<'_>) -> Result<(), HaruError> {
+    core.play_cue();
+    Ok(())
+}
+
 /// Dev/test switches from the environment (see `test_hooks`); all false in normal use.
 #[tauri::command]
 pub async fn test_hooks(

@@ -4,8 +4,8 @@ import type { RGB } from '../fluid/params';
 import type { SmoothedAudio } from '../audio/features';
 import type { Persona } from '../ipc/types';
 import { parseGlb } from './glb';
-import { HeadPass } from './headpass';
-import { LipsyncController, type LipMode } from './lipsync';
+import { HeadPass, type Closeup, type HeadMotion } from './headpass';
+import { LipsyncController, MORPH, type LipMode } from './lipsync';
 
 export interface FaceFrame {
   frameMs: number;
@@ -41,6 +41,8 @@ export interface FacePost {
   visMax: number;
   /** skin grade of the loaded head (only evaluated for textured heads) */
   grade: Readonly<HeadGrade>;
+  /** moment only: eye positions in UV (y up): left x, y, right x, y */
+  eyes?: [number, number, number, number];
 }
 
 /** Every runtime head: `app/public/heads/<key>.glb`. */
@@ -112,6 +114,11 @@ export function parseHeadOverride(value: string | null | undefined): HeadOverrid
 
 const PRESENCE_OFF = 0.004;
 
+/** Camera distance of the moment's close-up relative to the normal framing (the face fills the screen). */
+export const MOMENT_ZOOM = 0.58;
+/** Largest per-frame shake offset of the close-up, as a fraction of the visible height. */
+export const MOMENT_SHAKE = 0.01;
+
 /**
  * "Ein Gesicht im Nebel": owns the head asset, the lipsync controller and the G-buffer pass, and exposes what
  * the fluid (obstacle, mouth ink) and the composite (face shading) need. Fails soft: a missing GLB is logged once.
@@ -132,6 +139,11 @@ export class FaceLayer {
   private active = false;
   private frameNo = 0;
   private lastMist = -1;
+  /** keep the head loadable while the face is switched off (a daemon conversation with a moment pending) */
+  private keepReady = false;
+  private momentShown = false;
+  private readonly closeup: Closeup = { zoom: MOMENT_ZOOM, shakeX: 0, shakeY: 0 };
+  private readonly momentMotion: HeadMotion = { timeSec: 0, nod: 0, tilt: 0, speech: 0, closeup: this.closeup };
   private post: FacePost = { texture: null as unknown as WebGLTexture, amount: 0, light: [0, 0, 1], texel: [1, 1], focus: [0.5, 0.5], size: 0.8, gain: 1, textured: 0, albedo: null, visMax: HEAD_VIS_MAX, grade: NEUTRAL_GRADE };
 
   private readonly gl: WebGL2RenderingContext;
@@ -152,6 +164,12 @@ export class FaceLayer {
 
   setEnabled(on: boolean): void {
     this.enabled = on;
+    this.maybeLoad();
+  }
+
+  /** Loads the head even while the face is switched off, so a moment can show it. */
+  setKeepReady(on: boolean): void {
+    this.keepReady = on;
     this.maybeLoad();
   }
 
@@ -226,7 +244,7 @@ export class FaceLayer {
 
   /** Loads lazily: only once the conversation starts (and again when the head changes). */
   private maybeLoad(): void {
-    if (!this.enabled || this.mode !== 'talking') return;
+    if ((!this.enabled && !this.keepReady) || this.mode !== 'talking') return;
     const key = this.key;
     if (this.loaded === key || this.loading === key || this.failed.has(key)) return;
     const url = this.url(key);
@@ -300,6 +318,49 @@ export class FaceLayer {
       texel: [1 / this.pass.width, 1 / this.pass.height], focus: [fx, fy], size, gain: HEAD_GAIN[head],
       textured: this.pass.textured ? 1 : 0, albedo: this.pass.albedoTexture, visMax: HEAD_VIS_MAX, grade: HEAD_GRADE[head],
     };
+  }
+
+  /** True when the daemon head is loaded, i.e. a moment can show a picture. */
+  get momentReady(): boolean {
+    return this.pass.hasHead && this.loaded === 'daemon';
+  }
+
+  /**
+   * One frame of the moment: the daemon head in close-up, jaw wide open, brows down, a new small shake offset.
+   * `w` / `h` = G-buffer size. Returns the composite inputs, or null when the daemon head is not loaded.
+   */
+  renderMoment(w: number, h: number, aspect: number, timeSec: number): FacePost | null {
+    if (!this.momentReady) return null;
+    const wt = this.pass.weights;
+    if (wt) {
+      wt.fill(0);
+      wt[MORPH.jawOpen] = 1; // fully open, bypassing HEAD_MORPH_GAIN
+      wt[MORPH.lipsWide] = 0.5;
+      wt[MORPH.browFrown] = 1;
+    }
+    this.closeup.shakeX = (Math.random() * 2 - 1) * MOMENT_SHAKE;
+    this.closeup.shakeY = (Math.random() * 2 - 1) * MOMENT_SHAKE;
+    this.momentMotion.timeSec = timeSec;
+    this.pass.render(w, h, aspect, this.momentMotion);
+    this.momentShown = true;
+    this.active = false; // the normal frame renders its own G-buffer again
+    const p = this.post;
+    p.texture = this.pass.texture!;
+    p.albedo = this.pass.albedoTexture;
+    p.textured = this.pass.textured ? 1 : 0;
+    p.grade = HEAD_GRADE.daemon;
+    p.amount = 1;
+    const sp = this.pass.spots;
+    const eyes = (p.eyes ??= [0, 0, 0, 0]);
+    eyes[0] = sp[1].x; eyes[1] = sp[1].y; eyes[2] = sp[2].x; eyes[3] = sp[2].y;
+    return p;
+  }
+
+  /** Hard cut back: the close-up must not linger in the G-buffer. */
+  endMoment(): void {
+    if (!this.momentShown) return;
+    this.momentShown = false;
+    this.pass.blank();
   }
 
   /** Composite inputs, or null when the face is not drawn. */

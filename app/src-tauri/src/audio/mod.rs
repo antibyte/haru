@@ -2,6 +2,7 @@
 
 pub mod aec;
 pub mod capture;
+pub mod cue;
 pub mod devices;
 pub mod echo_sim;
 pub mod engine;

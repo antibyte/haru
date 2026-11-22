@@ -11,7 +11,7 @@
   },
   "app": {
     "windows": [
-      { "title": "Haru", "width": 1280, "height": 800, "minWidth": 800, "minHeight": 500 }
+      { "label": "main", "title": "Haru", "width": 1280, "height": 800, "minWidth": 800, "minHeight": 500, "decorations": false, "visible": false }
     ],
     "security": { "csp": null }
   },

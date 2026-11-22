@@ -4,7 +4,8 @@ import { App } from './app';
 import { createClient } from './ipc/client';
 import type { HaruClient } from './ipc/types';
 import { loadTestHooks, startDiagnostics } from './testhooks';
-import { S, fill, setLanguage } from './ui/strings';
+import { S, fill, onLanguageChange, setLanguage } from './ui/strings';
+import { TitleBar, createWindowControls } from './ui/titlebar';
 
 const canvas = document.getElementById('fluid') as HTMLCanvasElement | null;
 const overlayRoot = document.getElementById('overlay-root');
@@ -36,6 +37,9 @@ async function main(canvasEl: HTMLCanvasElement, root: HTMLElement): Promise<voi
   const hooks = await loadTestHooks(); // null unless a HARU_TEST_* env var is set
   const client = createClient();
   await initLanguage(client); // before any overlay exists, so no German flashes up first
+  // Own window buttons and drag strip (the native frame is off); z-index keeps them above every overlay.
+  const titleBar = new TitleBar(root, createWindowControls());
+  onLanguageChange(() => titleBar.relabel());
   const app = new App(client, canvasEl, root, hooks ?? undefined);
   if (hooks) startDiagnostics(hooks.log);
   app.start().catch((e) => console.error(e));

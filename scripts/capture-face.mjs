@@ -7,6 +7,7 @@
 //                 the daemon persona always shows daemon. Each shot logs the head actually loaded ("head").
 //   env QS=<extra query params>        appended to the URL, e.g. QS="head=angel-male" pins a head regardless of
 //                                      persona / voice (debug override; angel-female, angel-male, daemon)
+//                                      QS="facedebug&momentshow" keeps the full-screen close-up of the daemon head on screen
 //   env BROWSER=<path to chrome.exe>   (default: Google Chrome)
 //   env NOSHOT=1                       only log fps / presence, no screenshots
 //

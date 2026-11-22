@@ -24,7 +24,7 @@ export const zh: Strings = {
     angel: '天使',
     angelSub: '温暖体贴',
     daemon: '恶魔',
-    daemonSub: '愤世嫉俗，满怀轻蔑',
+    daemonSub: '阴险狡诈，满怀恶意',
   },
   hud: {
     mute: '静音',
@@ -35,6 +35,7 @@ export const zh: Strings = {
     latency: '延迟',
     mic: '麦克风',
   },
+  window: { minimize: '最小化', maximize: '最大化', restore: '还原', close: '关闭' },
   toast: { retry: '重试', details: '详情' },
   settings: {
     title: '设置',

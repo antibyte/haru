@@ -24,7 +24,7 @@ export const ja: Strings = {
     angel: '天使',
     angelSub: '温かく思いやりのある',
     daemon: '悪魔',
-    daemonSub: '冷笑的で軽蔑に満ちた',
+    daemonSub: '腹黒く悪意に満ちた',
   },
   hud: {
     mute: 'ミュート',
@@ -35,6 +35,7 @@ export const ja: Strings = {
     latency: '遅延',
     mic: 'マイク',
   },
+  window: { minimize: '最小化', maximize: '最大化', restore: '元のサイズに戻す', close: '閉じる' },
   toast: { retry: '再試行', details: '詳細' },
   settings: {
     title: '設定',

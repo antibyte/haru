@@ -10,7 +10,13 @@ import { Subtitles } from './ui/subtitles';
 import { ErrorToast } from './ui/toast';
 import { bindKeys } from './ui/keys';
 import { badgeLabel } from './ui/format';
+import { Presence, localPresenceStore } from './ui/presence';
 import { getLanguage, resolveLanguage, sameText, setLanguage } from './ui/strings';
+
+/** How long the moment's picture stays up. */
+const MOMENT_MS = 500;
+/** Debug (`?debug&moment`): the moment fires this long after a daemon conversation starts. */
+const MOMENT_FORCE_DELAY_MS = 1500;
 
 export interface AppHooks { autostart: boolean; log: (msg: string) => void }
 
@@ -35,6 +41,10 @@ export class App {
   private errorShown = false;
   private muted = false;
   private lastWarning: UiText | null = null;
+  private readonly presence = new Presence(localPresenceStore());
+  /** true while the current conversation is a daemon one and feeds the presence scheduler */
+  private presenceActive = false;
+  private forceTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly client: HaruClient, canvas: HTMLCanvasElement, root: HTMLElement, private readonly hooks?: AppHooks) {
     this.renderer = new Renderer(canvas);
@@ -199,6 +209,7 @@ export class App {
     this.toast.hide();
     try {
       await this.client.startConversation(persona, (f) => {
+        if (this.presenceActive && persona === 'daemon' && this.presence.tick(performance.now(), f.model.rms, f.mic.rms)) this.fireMoment();
         this.renderer.pushViz(f);
         this.hud.setLatency(f.latencyMs);
         this.hud.setMicLevel(f.mic.rms);
@@ -218,6 +229,33 @@ export class App {
     this.hud.setMuted(this.muted);
     this.renderer.setMode('talking');
     if (this.muted) void this.client.setMuted(true);
+    if (persona === 'daemon') this.beginPresence();
+  }
+
+  private beginPresence(): void {
+    this.presenceActive = true;
+    const armed = this.presence.begin(performance.now());
+    const forced = this.debugFlag('moment');
+    this.renderer.keepFaceReady(armed || forced); // the head must be loaded when the moment comes, even with the face off
+    if (forced) this.forceTimer = setTimeout(() => this.presence.force(), MOMENT_FORCE_DELAY_MS);
+  }
+
+  /** The moment: hard cut to the close-up for MOMENT_MS, with the cue on the same frame. Never throws. */
+  private fireMoment(): void {
+    if (this.renderer.startMoment(MOMENT_MS)) {
+      const root = document.documentElement;
+      root.classList.add('is-moment');
+      setTimeout(() => root.classList.remove('is-moment'), MOMENT_MS);
+    }
+    this.client.playCue().catch((e) => this.hooks?.log(`cue failed: ${JSON.stringify(toHaruError(e))}`));
+  }
+
+  /** Debug query flags (`?debug&<name>`), same style as the renderer's. */
+  private debugFlag(name: string): boolean {
+    try {
+      const q = new URLSearchParams(window.location.search);
+      return q.has('debug') && q.has(name);
+    } catch { return false; }
   }
 
   private async stop(): Promise<void> {
@@ -235,6 +273,10 @@ export class App {
   private endTalk(): void {
     if (this.phase !== 'talking' && this.phase !== 'starting') return;
     this.phase = 'idle';
+    this.presenceActive = false;
+    this.presence.end();
+    if (this.forceTimer) { clearTimeout(this.forceTimer); this.forceTimer = null; }
+    this.renderer.keepFaceReady(false);
     this.hud.hide();
     this.renderer.resetWords();
     this.renderer.setMode('idle');
