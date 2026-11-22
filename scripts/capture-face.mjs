@@ -2,7 +2,11 @@
 // for reviewing the face-in-fog visuals. One browser per call; prints fps / face presence per shot.
 //
 // usage: node scripts/capture-face.mjs <outDir> [female|male] [on|off] [seconds "7,11,19"] [angel|daemon]
-//   env QS=<extra query params>        appended to the URL, e.g. QS="head=female-textured"
+//   female|male = the voice gender (settings.gender) forced for the capture: with the angel persona it picks
+//                 angel-female / angel-male (no face if that GLB is missing);
+//                 the daemon persona always shows daemon. Each shot logs the head actually loaded ("head").
+//   env QS=<extra query params>        appended to the URL, e.g. QS="head=angel-male" pins a head regardless of
+//                                      persona / voice (debug override; angel-female, angel-male, daemon)
 //   env BROWSER=<path to chrome.exe>   (default: Google Chrome)
 //   env NOSHOT=1                       only log fps / presence, no screenshots
 //
@@ -23,6 +27,10 @@ if (!outDir) {
 }
 if (persona !== 'angel' && persona !== 'daemon') {
   console.error(`unknown persona "${persona}" (angel|daemon)`);
+  process.exit(2);
+}
+if (gender !== 'female' && gender !== 'male') {
+  console.error(`unknown voice gender "${gender}" (female|male)`);
   process.exit(2);
 }
 const times = timesArg.split(',').map(Number);
@@ -74,24 +82,27 @@ try {
   })();` });
   await send('Page.navigate', { url: `http://localhost:5173/?mock&debug${process.env.QS ? `&${process.env.QS.replace(/^[?&]/, '')}` : ''}` });
 
-  // dismiss the headphone hint, pick the head, choose the persona
+  // dismiss the headphone hint, force the voice gender (picks the head), choose the persona
+  const setFace = `window.__haru.setFace(${face === 'on'}, '${gender}')`;
   let started = false;
   for (let i = 0; i < 60 && !started; i++) {
     await sleep(500);
     started = await evaluate(`(() => {
       const hint = document.querySelector('.overlay.hint.is-visible button'); if (hint) { hint.click(); return false; }
       const h = window.__haru; if (!h) return false;
-      h.setFace(${face === 'on'}, '${gender === 'male' ? 'male' : 'female'}'); if (h.fpsEl) h.fpsEl.style.display = 'none';
+      ${setFace}; if (h.fpsEl) h.fpsEl.style.display = 'none';
       const btn = document.querySelector('.overlay.chooser.is-visible .persona[data-persona="${persona}"]:not([disabled])');
       if (!btn) return false; btn.click(); return true; })()`);
   }
   if (!started) throw new Error('could not start the mock conversation (is the dev server on :5173 running?)');
+  // once more after the start: a late settings save (e.g. from dismissing the hint) re-applies settings.gender
+  await evaluate(`(() => { ${setFace}; return true; })()`);
 
   const t0 = Date.now();
   for (const t of times) {
     await sleep(Math.max(0, t * 1000 - (Date.now() - t0)));
-    const stats = await evaluate(`JSON.stringify({ fps: Math.round(__haru.fpsValue), presence: +(__haru.face?.presence ?? 0).toFixed(2),
-      modelRms: +(__haru.audio?.modelRms ?? 0).toFixed(3), quality: __haru.level })`);
+    const stats = await evaluate(`JSON.stringify({ head: __haru.face?.head ?? null, fps: Math.round(__haru.fpsValue),
+      presence: +(__haru.face?.presence ?? 0).toFixed(2), modelRms: +(__haru.audio?.modelRms ?? 0).toFixed(3), quality: __haru.level })`);
     if (process.env.NOSHOT) { console.log(`t=${t}s`, stats); continue; }
     const shot = await send('Page.captureScreenshot', { format: 'png' });
     const file = join(outDir, `${persona}-${gender}-${face}-t${t}.png`);

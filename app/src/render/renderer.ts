@@ -12,7 +12,7 @@ import { GlyphRasterizer } from '../words/glyphs';
 import { WordInjector } from '../words/injector';
 import { WordPath } from '../words/path';
 import { WordAssembler, type WordEvent } from '../words/assembler';
-import { FaceLayer, TEXTURED_HEADS } from '../heads/face';
+import { FaceLayer, TEXTURED_HEADS, parseHeadOverride } from '../heads/face';
 import type { Persona } from '../ipc/types';
 import type { Quality, QualityLevel, VizFrame } from '../ipc/types';
 
@@ -126,8 +126,9 @@ export class Renderer {
     this.coupling = new AudioCoupling(this.sim);
     this.glyphs = new GlyphRasterizer(this.glc.gl);
     this.injector = new WordInjector(this.sim, this.glyphs, this.path);
-    const texturedHeads = this.debug && this.params.get('head') === 'female-textured' ? new Set([...TEXTURED_HEADS, 'female']) : TEXTURED_HEADS;
-    this.face = new FaceLayer(this.glc, undefined, texturedHeads);
+    // debug only: ?head=<angel-female|angel-male|daemon> pins a head
+    const head = this.debug ? parseHeadOverride(this.params.get('head')) : null;
+    this.face = new FaceLayer(this.glc, undefined, TEXTURED_HEADS, head?.key ?? null);
     if (this.debug) this.setupDebug();
   }
 
@@ -228,14 +229,14 @@ export class Renderer {
     this.mode = m; if (m !== 'boot') this.downloadBps = 0;
     this.face.setMode(m);
   }
-  /** Settings: "Gesicht im Nebel" on/off and which head (male, otherwise female). */
+  /** Settings: "Gesicht im Nebel" on/off and the voice gender that picks the angel head (male, otherwise female). */
   setFace(show: boolean, gender: 'female' | 'male' | null): void {
     this.face.setGender(gender);
     this.face.setEnabled(show);
   }
   /**
-   * null = start screen / neutral. angel = porcelain head by gender + neutral ink; daemon = daemon.glb + ember ink.
-   * (Debug: `?head=female-textured` makes the female head use its own base colour, to check the textured path.)
+   * null = start screen / neutral. angel = textured angel head by voice gender (angel-female / angel-male) + neutral
+   * ink; daemon = daemon.glb + ember ink. (Debug: `?head=<angel-female|angel-male|daemon>` pins a head.)
    */
   setPersona(p: Persona | null): void {
     this.face.setPersona(p);

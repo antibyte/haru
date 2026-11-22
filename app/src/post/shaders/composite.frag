@@ -10,7 +10,7 @@ uniform float uAspect;
 uniform float uTime;
 uniform float uRms;
 uniform float uExposure;
-uniform sampler2D uHead;    // head G-buffer: rg = view normal xy, b = coverage/depth, a = mouth cavity
+uniform sampler2D uHead;    // head G-buffer: rg = view normal xy, b = coverage/depth, a = mouth cavity (textured: exact)
 uniform float uHeadAmt;     // presence 0..1 (0 = no face drawn)
 uniform vec3 uHeadLight;    // view-space light direction
 uniform sampler2D uInk;     // blurred dye, coarse (wide fog glow)
@@ -22,6 +22,12 @@ uniform float uHeadGain;    // per-head presence normalisation
 uniform sampler2D uHeadAlb; // head G-buffer albedo (rgb linear, a = textured coverage); only read when uHeadTextured > 0.5
 uniform float uHeadTextured; // 0 = porcelain (the original math, exactly), 1 = textured head (real albedo)
 uniform float uHeadVisMax;  // visibility cap for textured heads (porcelain keeps 0.28)
+// per-head skin grade of textured heads (HEAD_GRADE in heads/face.ts): skin = pow(albedo, gamma) * lift,
+// then mix(lum(skin) * tint, skin, saturation). Never evaluated for porcelain heads.
+uniform float uSkinGamma;
+uniform float uSkinLift;
+uniform vec3 uSkinTint;
+uniform float uSkinSat;
 uniform float uEmber;       // 0 = neutral look (exactly as before), 1 = daemon embers
 uniform float uHeadDebug;   // ?facedebug: show the whole face (no ink gate / dissolve)
 in vec2 vUv;
@@ -79,6 +85,7 @@ void main() {
   // --- head G-buffer (glass head in fog): coverage, normal and refraction of the dye lookup inside the silhouette
   vec4 hg = vec4(0.0);
   float cov = 0.0;
+  float cavity = 0.0;          // textured heads: how much the open mouth hides the light behind it (0 elsewhere)
   vec3 hn = vec3(0.0, 0.0, 1.0);
   if (uHeadAmt > 0.002) {
     hg = texture(uHead, uv);
@@ -184,11 +191,14 @@ void main() {
     float vis = min(visCap, visCap * uHeadAmt * cov * region * mix(0.35, 1.0, smoothstep(0.12, 0.55, hn.z)) * mix(0.25, 1.0, dissolve) * mix(0.12, 1.0, gate) * words * (1.0 - inkMask) * uHeadGain);
     if (uHeadDebug > 0.5) vis = 0.4 * cov;
     vec3 porcelain = vec3(0.96, 0.92, 0.88);
-    // textured heads: the real albedo (un-premultiplied against the filtered G-buffer edge), dark creature skin lifted so ink can reveal it
-    // (the VARCO texture is already x1.3 brightened at build time, so the lift is modest; a slight pull toward red-grey keeps it leathery, not human-pink)
-    vec3 skin = pow(max(alb.rgb / max(alb.a, 1e-3), 0.0), vec3(0.9)) * 1.3;
-    skin = mix(vec3(dot(skin, vec3(0.299, 0.587, 0.114))) * vec3(1.1, 0.78, 0.7), skin, 0.4);
-    porcelain = mix(porcelain, skin, texd);
+    // textured heads: the real albedo (un-premultiplied against the filtered G-buffer edge), graded per head
+    // (daemon: dark creature skin lifted so ink can reveal it, pulled toward red-grey; angels: natural skin).
+    // texd == 0 (porcelain heads, outside textured geometry) skips it: the porcelain colour stays exactly as it was.
+    if (texd > 0.0) {
+      vec3 skin = pow(max(alb.rgb / max(alb.a, 1e-3), 0.0), vec3(uSkinGamma)) * uSkinLift;
+      skin = mix(vec3(dot(skin, vec3(0.299, 0.587, 0.114))) * uSkinTint, skin, uSkinSat);
+      porcelain = mix(porcelain, skin, texd);
+    }
     float shade = 0.1 + 0.9 * wrap;
     // relief: the ink itself is shaped by the face (lit side brighter, shadow side darker)
     col *= 1.0 + vis * 2.4 * max(shade - 0.3, 0.0);
@@ -203,7 +213,20 @@ void main() {
     vec3 add = lit * vis * 8.0;
     col += 0.4 * (1.0 - exp(-add / 0.4));
     // mouth cavity
-    col *= 1.0 - 0.55 * hg.a * cov * smoothstep(0.0, 0.04, vis);
+    if (uHeadTextured > 0.5) {
+      // textured heads: the G-buffer alpha is the exact inner mouth (head.frag: the pouch behind the lips at any jaw
+      // opening, incl. the resting slit). Wherever the face shows, the cavity hides the fluid behind it: near-black
+      // with a faint warm glow from the (smooth) local ink, never brighter than what it covers, no fluid structure.
+      // 2x2 taps half a G-texel apart soften the stair-stepped outline of the low-res G-buffer (no halo on the lips).
+      vec2 ht = 0.5 * uHeadTexel;
+      float hm = 0.25 * (texture(uHead, uv + ht).a + texture(uHead, uv - ht).a
+        + texture(uHead, uv + vec2(ht.x, -ht.y)).a + texture(uHead, uv + vec2(-ht.x, ht.y)).a);
+      cavity = hm * smoothstep(0.0, 0.04, vis);
+      vec3 deep = vec3(0.016, 0.006, 0.005) * (0.25 + inkS);
+      col = mix(col, min(col, deep), cavity);
+    } else {
+      col *= 1.0 - 0.55 * hg.a * cov * smoothstep(0.0, 0.04, vis);
+    }
   }
 
   // --- ambient nebula: a very faint deep-blue / teal haze so the frame is never dead black
@@ -224,9 +247,11 @@ void main() {
     texture(uBloom, uv + ca).r,
     texture(uBloom, uv).g,
     texture(uBloom, uv - ca).b);
-  col += dye * dye * 0.26;                 // luminous core: highlights rise faster than the tails
-  col += bloom * 1.4;
-  col += texture(uRays, uv).rgb;
+  // (the open mouth of a textured head also keeps the fluid's core and most of its glow and rays out; cavity = 0 for
+  // porcelain heads and everywhere outside the mouth, so these lines are unchanged there)
+  col += dye * dye * 0.26 * (1.0 - cavity); // luminous core: highlights rise faster than the tails
+  col += bloom * 1.4 * (1.0 - 0.9 * cavity);
+  col += texture(uRays, uv).rgb * (1.0 - 0.9 * cavity);
 
   // --- grade
   col *= uExposure;

@@ -27,6 +27,20 @@ export interface PostUniforms {
   ember?: number;
 }
 
+/**
+ * Skin grade of a textured head (structural copy of heads/face.ts HeadGrade):
+ * skin = pow(albedo, gamma) * lift, then mix(lum(skin) * tint, skin, saturation).
+ */
+export interface SkinGrade {
+  gamma: number;
+  lift: number;
+  tint: readonly [number, number, number];
+  saturation: number;
+}
+
+/** Identity grade (skin = albedo); also what porcelain heads get (the composite never evaluates it for them). */
+const NEUTRAL_SKIN: SkinGrade = { gamma: 1, lift: 1, tint: [1, 1, 1], saturation: 1 };
+
 /** The face layer's inputs for the composite (null / undefined = no face this frame). */
 export interface HeadPostInputs {
   texture: WebGLTexture;
@@ -45,6 +59,8 @@ export interface HeadPostInputs {
   albedo?: WebGLTexture | null;
   /** visibility cap for textured heads */
   visMax?: number;
+  /** per-head skin grade for textured heads (undefined = neutral: skin = albedo) */
+  grade?: SkinGrade;
   /** debug (?facedebug): show the face without ink gate and dissolve mask */
   debug?: boolean;
 }
@@ -232,9 +248,10 @@ export class PostFX {
       gl.uniform2f(p.uniforms['uFocus'], head.focus[0], head.focus[1]);
       gl.uniform1f(p.uniforms['uFaceSize'], head.size);
       gl.uniform1f(p.uniforms['uHeadGain'], head.gain ?? 1);
-      if (head.textured && head.albedo) {
+      const textured = !!(head.textured && head.albedo);
+      if (textured) {
         gl.activeTexture(gl.TEXTURE6);
-        gl.bindTexture(gl.TEXTURE_2D, head.albedo);
+        gl.bindTexture(gl.TEXTURE_2D, head.albedo!);
         gl.uniform1i(p.uniforms['uHeadAlb'], 6);
         gl.uniform1f(p.uniforms['uHeadTextured'], 1);
         gl.uniform1f(p.uniforms['uHeadVisMax'], head.visMax ?? 0.42);
@@ -243,6 +260,11 @@ export class PostFX {
         gl.uniform1f(p.uniforms['uHeadTextured'], 0);
         gl.uniform1f(p.uniforms['uHeadVisMax'], 0.28);
       }
+      const g = textured ? head.grade ?? NEUTRAL_SKIN : NEUTRAL_SKIN;
+      gl.uniform1f(p.uniforms['uSkinGamma'], g.gamma);
+      gl.uniform1f(p.uniforms['uSkinLift'], g.lift);
+      gl.uniform3f(p.uniforms['uSkinTint'], g.tint[0], g.tint[1], g.tint[2]);
+      gl.uniform1f(p.uniforms['uSkinSat'], g.saturation);
       gl.activeTexture(gl.TEXTURE3);
       gl.bindTexture(gl.TEXTURE_2D, head.texture);
       gl.uniform1i(p.uniforms['uHead'], 3);

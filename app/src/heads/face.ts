@@ -39,16 +39,76 @@ export interface FacePost {
   albedo: WebGLTexture | null;
   /** upper bound of the face visibility for textured heads (porcelain keeps its own 0.28) */
   visMax: number;
+  /** skin grade of the loaded head (only evaluated for textured heads) */
+  grade: Readonly<HeadGrade>;
 }
 
-export type HeadKey = 'female' | 'male' | 'daemon';
+/** Every runtime head: `app/public/heads/<key>.glb`. */
+export const HEAD_KEYS = ['angel-female', 'angel-male', 'daemon'] as const;
+export type HeadKey = (typeof HEAD_KEYS)[number];
 
 /** Heads whose embedded base colour is used as albedo (the rest stays porcelain). */
-export const TEXTURED_HEADS: ReadonlySet<string> = new Set(['daemon']);
+export const TEXTURED_HEADS: ReadonlySet<HeadKey> = new Set<HeadKey>(['daemon', 'angel-female', 'angel-male']);
 /** Per-head presence gain, tuned per asset. */
-export const HEAD_GAIN: Record<HeadKey, number> = { female: 1.3, male: 1.0, daemon: 1.3 };
+export const HEAD_GAIN: Readonly<Record<HeadKey, number>> = { daemon: 1.3, 'angel-female': 1.0, 'angel-male': 1.0 };
+
+/** Per-head scale on the lipsync morph weights (index = MORPH order from lipsync.ts). Angels: the loudness-driven
+ *  lipsync opens the jaw too far for a realistic face, so jaw / wide / round are damped. */
+export const HEAD_MORPH_GAIN: Readonly<Record<HeadKey, readonly number[]>> = {
+  daemon: [1, 1, 1, 1, 1, 1, 1, 1],
+  'angel-female': [0.5, 0.7, 0.7, 1, 1, 1, 1, 1],
+  'angel-male': [0.5, 0.7, 0.7, 1, 1, 1, 1, 1],
+};
 /** Visibility cap of textured heads in the composite (uHeadVisMax); porcelain heads stay at 0.28. */
 export const HEAD_VIS_MAX = 0.42;
+
+/**
+ * Skin grade of a textured head, applied in composite.frag to the un-premultiplied albedo `a`
+ * (uniforms uSkinGamma / uSkinLift / uSkinTint / uSkinSat):
+ *   skin = pow(a, gamma) * lift
+ *   skin = mix(lum(skin) * tint, skin, saturation)
+ * Porcelain heads never evaluate it.
+ */
+export interface HeadGrade {
+  /** exponent on the albedo (< 1 opens up the shadows) */
+  gamma: number;
+  /** linear gain after the gamma */
+  lift: number;
+  /** colour of the desaturated share (multiplies the luminance) */
+  tint: readonly [number, number, number];
+  /** 1 = the albedo's own colours, 0 = only the tinted luminance */
+  saturation: number;
+}
+
+/** Identity grade: skin = albedo. */
+export const NEUTRAL_GRADE: Readonly<HeadGrade> = Object.freeze({ gamma: 1, lift: 1, tint: [1, 1, 1] as const, saturation: 1 });
+
+/** Per-head skin grade (tuned visually per asset). */
+export const HEAD_GRADE: Readonly<Record<HeadKey, Readonly<HeadGrade>>> = {
+  // dark VARCO creature skin (already x1.3 at build time) lifted so ink can reveal it, pulled toward red-grey: leathery, not human-pink
+  daemon: { gamma: 0.9, lift: 1.3, tint: [1.1, 0.78, 0.7], saturation: 0.4 },
+  // VARCO-baked angel skin is ~1.6-2x darker (linear) and more yellow than the reference; gamma 0.9 + lift 1.45 brings
+  // the median skin back to the reference (~183/144/105 sRGB vs 190/137/107)
+  'angel-female': { gamma: 0.9, lift: 1.45, tint: [1, 1, 1], saturation: 0.95 },
+  'angel-male': { gamma: 0.9, lift: 1.45, tint: [1, 1, 1], saturation: 0.95 },
+};
+
+/** The head a persona shows: daemon its own head; angel (and the neutral start screen) the angel head of the voice's gender (unset = female). */
+export function selectHead(persona: Persona | null, gender: 'female' | 'male' | null): HeadKey {
+  if (persona === 'daemon') return 'daemon';
+  return gender === 'male' ? 'angel-male' : 'angel-female';
+}
+
+/** Debug head override (`?debug&head=<key>`): pins the head regardless of persona and voice. */
+export interface HeadOverride {
+  key: HeadKey;
+}
+
+/** `<HeadKey>` pins that head (angel-female, angel-male, daemon). */
+export function parseHeadOverride(value: string | null | undefined): HeadOverride | null {
+  if (!value) return null;
+  return (HEAD_KEYS as readonly string[]).includes(value) ? { key: value as HeadKey } : null;
+}
 
 const PRESENCE_OFF = 0.004;
 
@@ -63,24 +123,28 @@ export class FaceLayer {
   private gender: 'female' | 'male' = 'female';
   private persona: Persona | null = null;
   private mode: LipMode = 'boot';
-  private loaded: string | null = null;
-  private loading: string | null = null;
-  private readonly failed = new Set<string>();
+  private loaded: HeadKey | null = null;
+  private loading: HeadKey | null = null;
+  private readonly failed = new Set<HeadKey>();
   private pieces: string[] = [];
   private presence = 0;
   private speech = 0;
   private active = false;
   private frameNo = 0;
   private lastMist = -1;
-  private post: FacePost = { texture: null as unknown as WebGLTexture, amount: 0, light: [0, 0, 1], texel: [1, 1], focus: [0.5, 0.5], size: 0.8, gain: 1, textured: 0, albedo: null, visMax: HEAD_VIS_MAX };
+  private post: FacePost = { texture: null as unknown as WebGLTexture, amount: 0, light: [0, 0, 1], texel: [1, 1], focus: [0.5, 0.5], size: 0.8, gain: 1, textured: 0, albedo: null, visMax: HEAD_VIS_MAX, grade: NEUTRAL_GRADE };
 
   private readonly gl: WebGL2RenderingContext;
 
-  /** `textured`: head keys whose embedded image is used as albedo (default TEXTURED_HEADS; debug may add 'female'). */
+  /**
+   * `textured`: head keys whose embedded image is used as albedo (default TEXTURED_HEADS).
+   * `forced`: debug override that pins the head regardless of persona and voice (null = selectHead()).
+   */
   constructor(
     glc: GLContext,
     private readonly log: (msg: string) => void = (m) => console.warn(m),
-    private readonly textured: ReadonlySet<string> = TEXTURED_HEADS,
+    private readonly textured: ReadonlySet<HeadKey> = TEXTURED_HEADS,
+    private readonly forced: HeadKey | null = null,
   ) {
     this.gl = glc.gl;
     this.pass = new HeadPass(glc);
@@ -98,15 +162,21 @@ export class FaceLayer {
     this.maybeLoad();
   }
 
-  /** null / angel = porcelain head by gender; daemon = daemon.glb. */
+  /** null / angel = textured angel head by voice gender (angel-female / angel-male); daemon = daemon.glb. */
   setPersona(p: Persona | null): void {
     if (p === this.persona) return;
     this.persona = p;
     this.maybeLoad();
   }
 
+  /** The head that should be shown (a missing GLB simply means no face). */
   private get key(): HeadKey {
-    return this.persona === 'daemon' ? 'daemon' : this.gender;
+    return this.forced ?? selectHead(this.persona, this.gender);
+  }
+
+  /** The head currently loaded into the G-buffer pass (null = none yet); debug / capture only. */
+  get head(): HeadKey | null {
+    return this.loaded;
   }
 
   setMode(m: LipMode): void {
@@ -119,8 +189,8 @@ export class FaceLayer {
     if (this.mode === 'talking') for (const t of texts) this.pieces.push(t);
   }
 
-  private url(): string {
-    return `${import.meta.env.BASE_URL}heads/${this.key}.glb`;
+  private url(key: HeadKey): string {
+    return `${import.meta.env.BASE_URL}heads/${key}.glb`;
   }
 
   /** Decodes the embedded base colour into an sRGB mipmapped texture; null (porcelain) on any failure. */
@@ -157,29 +227,30 @@ export class FaceLayer {
   /** Loads lazily: only once the conversation starts (and again when the head changes). */
   private maybeLoad(): void {
     if (!this.enabled || this.mode !== 'talking') return;
-    const url = this.url();
-    if (this.loaded === url || this.loading === url || this.failed.has(url)) return;
     const key = this.key;
-    this.loading = url;
+    if (this.loaded === key || this.loading === key || this.failed.has(key)) return;
+    const url = this.url(key);
+    this.loading = key;
     void (async () => {
       try {
         const res = await fetch(url);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const glb = parseGlb(await res.arrayBuffer());
         const albedo = this.textured.has(key) ? await this.decodeAlbedo(glb.image, key) : null;
-        if (this.loading !== url) { // superseded by a head change
+        if (this.loading !== key) { // superseded by a head change
           if (albedo) this.gl.deleteTexture(albedo);
           return;
         }
         this.pass.setHead(glb);
         this.pass.setAlbedo(albedo);
-        this.loaded = url;
+        this.loaded = key;
       } catch (e) {
-        this.failed.add(url);
+        this.failed.add(key);
         this.log(`face: ${url} could not be loaded (${(e as Error).message}); rendering without a face`);
       } finally {
-        if (this.loading === url) this.loading = null;
-        if (this.loaded !== null && this.loaded !== this.url()) this.maybeLoad(); // head changed meanwhile
+        if (this.loading === key) this.loading = null;
+        // the head changed meanwhile (maybeLoad ignores loaded / failed heads)
+        if (this.loading === null && this.loaded !== this.key) this.maybeLoad();
       }
     })();
   }
@@ -200,7 +271,12 @@ export class FaceLayer {
       this.active = false;
       return;
     }
-    w?.set(out.weights);
+    if (w) {
+      w.set(out.weights);
+      // damp per head; the pass (mouth mask / position / cavity) reads these weights, so it sees the damped value too
+      const mg = HEAD_MORPH_GAIN[this.loaded ?? this.key];
+      for (let i = 0; i < mg.length; i++) w[i] = Math.min(1, Math.max(0, w[i]! * mg[i]!));
+    }
     const frugal = f.tier >= 2;
     this.frameNo++;
     if (!frugal || this.frameNo % 2 === 0 || !this.active) {
@@ -218,10 +294,11 @@ export class FaceLayer {
     const fx = (sp[1].x + sp[2].x + sp[3].x + sp[6].x) / 4;
     const fy = (sp[1].y + sp[2].y + sp[3].y + sp[6].y) / 4;
     const size = Math.max(0.2, sp[8].y - sp[7].y + 0.1);
+    const head = this.loaded ?? this.key; // tuning of the head actually in the pass (it lags a head change until loaded)
     this.post = {
       texture: this.pass.texture!, amount: out.presence, light: [lx / n, ly / n, lz / n],
-      texel: [1 / this.pass.width, 1 / this.pass.height], focus: [fx, fy], size, gain: HEAD_GAIN[this.key],
-      textured: this.pass.textured ? 1 : 0, albedo: this.pass.albedoTexture, visMax: HEAD_VIS_MAX,
+      texel: [1 / this.pass.width, 1 / this.pass.height], focus: [fx, fy], size, gain: HEAD_GAIN[head],
+      textured: this.pass.textured ? 1 : 0, albedo: this.pass.albedoTexture, visMax: HEAD_VIS_MAX, grade: HEAD_GRADE[head],
     };
   }
 

@@ -3,18 +3,23 @@
 Validate the runtime head GLBs (app/public/heads/<subject>.glb) against the contract in README.md and
 optionally record the outputs in <subject>/generation.json ("prepared" section).
 
-    python validate_heads.py [female male daemon | --subjects female male daemon] [--record]
+    python validate_heads.py [SUBJECT ... | --subjects SUBJECT ...] [--record]
+    SUBJECT: female male daemon angel-female angel-male (default: female male)
 
 Checks: GLB magic/version, one mesh named "Head" with one primitive (POSITION, NORMAL, TEXCOORD_0, indices),
 <= 40,000 triangles, 8 morph targets with POSITION + NORMAL deltas, mesh.extras.targetNames in contract order,
-scene.extras.haru landmarks, one embedded JPEG base-colour texture <= 1024^2 (2048^2 for the textured `daemon` subject), finite data, head height ~ 1.
-Needs only Python 3 + numpy.
+scene.extras.haru landmarks, one embedded JPEG base-colour texture <= 1024^2 (2048^2 for the textured subjects
+`daemon`, `angel-female`, `angel-male`), finite data, head height ~ 1, an inner-mouth pouch (>= 8 triangles around the
+mouth mapped to one single UV point; the renderer masks the open mouth by it) on a dark texel.
+Needs only Python 3 + numpy (Pillow, if installed, adds the texel check).
 """
 import argparse, datetime, hashlib, json, os, struct, sys
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
+SUBJECTS = ['female', 'male', 'daemon', 'angel-female', 'angel-male']
+MAX_TEX = {'daemon': 2048, 'angel-female': 2048, 'angel-male': 2048}   # textured subjects; all others 1024
 TARGETS = ['jawOpen', 'lipsWide', 'lipsRound', 'lipsPress', 'smile', 'browRaise', 'browFrown', 'blink']
 LANDMARKS = ['mouth', 'mouthL', 'mouthR', 'eyeL', 'eyeR', 'chin', 'crown', 'noseTip', 'jawPivot']
 CT = {5120: np.int8, 5121: np.uint8, 5122: np.int16, 5123: np.uint16, 5125: np.uint32, 5126: np.float32}
@@ -75,6 +80,43 @@ def accessor(js, binc, idx):
         vals = _view(js, binc, a, sp['values']['bufferView'], sp['values'].get('byteOffset', 0), dt, n, sp['count'])
         arr[ind.astype(np.int64)] = vals.reshape(sp['count'], n)
     return arr if n > 1 else arr.reshape(-1)
+
+
+INNER_MIN_TRIANGLES = 8      # same as CAVITY_MIN_TRIANGLES in app/src/heads/cavity.ts
+INNER_MAX_SRGB = 48          # the inner-mouth texel must stay dark after JPEG (painted ~(11, 3, 4))
+
+
+def inner_mouth(pos, uv, idx, haru):
+    """The inner-mouth pouch (build_head.py cut_mouth / build_pouch): triangles around the mouth whose three UVs
+    coincide, all mapped to one point of a reserved dark atlas cell. The renderer finds it the same way
+    (findCavityUv in app/src/heads/cavity.ts) and masks the open mouth exactly by that UV.
+    Returns (uv, triangle count); (None, 0) when there is none."""
+    t = idx.reshape(-1, 3).astype(np.int64)
+    u = uv[t]                                                     # (n, 3, 2)
+    point = np.all(u[:, 1:] == u[:, :1], axis=(1, 2))
+    c = pos[t].astype(np.float64).mean(axis=1)
+    m = np.array(haru['mouth'], dtype=np.float64)
+    half_w = max(abs(haru['mouthL'][0] - m[0]), abs(haru['mouthR'][0] - m[0]), 0.05)
+    near = (np.abs(c[:, 0] - m[0]) <= 1.5 * half_w + 0.02) & (np.abs(c[:, 1] - m[1]) <= 0.12)         & (c[:, 2] >= m[2] - 0.25) & (c[:, 2] <= m[2] + 0.05)
+    sel = point & near
+    if not sel.any():
+        return None, 0
+    keys, counts = np.unique(u[sel, 0], axis=0, return_counts=True)
+    k = int(counts.argmax())
+    return keys[k], int(counts[k])
+
+
+def texel_srgb(raw, uv):
+    """sRGB bytes of the decoded JPEG around a glTF UV (3x3 block max), or None without Pillow."""
+    try:
+        import io
+        from PIL import Image
+    except ImportError:
+        return None
+    im = np.asarray(Image.open(io.BytesIO(raw)).convert('RGB'))
+    h, w = im.shape[:2]
+    x, y = min(int(uv[0] * w), w - 1), min(int(uv[1] * h), h - 1)
+    return [int(v) for v in im[max(y - 1, 0):y + 2, max(x - 1, 0):x + 2].reshape(-1, 3).max(axis=0)]
 
 
 def jpeg_size(b):
@@ -185,22 +227,39 @@ def validate(path, max_tex=1024):
             errs.append('texture is not JPEG')
         if w > max_tex or h > max_tex:
             errs.append(f'texture {w}x{h} > {max_tex}')
+    # inner mouth: the pouch the renderer darkens as the open mouth
+    if 'TEXCOORD_0' in prim['attributes'] and all(k in haru for k in ('mouth', 'mouthL', 'mouthR')):
+        uv = accessor(js, binc, prim['attributes']['TEXCOORD_0'])
+        cuv, n = inner_mouth(pos, uv, idx, haru)
+        info['inner_mouth'] = {'uv': None if cuv is None else [float(v) for v in cuv], 'triangles': n}
+        if n < INNER_MIN_TRIANGLES:
+            errs.append(f'inner mouth missing: {n} point-mapped triangles around the mouth (< {INNER_MIN_TRIANGLES})')
+        elif len(imgs) == 1:
+            bv = js['bufferViews'][imgs[0]['bufferView']]
+            rgb = texel_srgb(binc[bv.get('byteOffset', 0):bv.get('byteOffset', 0) + bv['byteLength']], cuv)
+            info['inner_mouth']['texel_srgb'] = rgb if rgb is not None else 'not checked (no Pillow)'
+            if rgb is not None and max(rgb) > INNER_MAX_SRGB:
+                errs.append(f'inner-mouth texel {rgb} is not dark (max > {INNER_MAX_SRGB})')
     return errs, info
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('positional', nargs='*', choices=['female', 'male', 'daemon'], help='subjects (same as --subjects)')
-    ap.add_argument('--subjects', nargs='*', default=None, choices=['female', 'male', 'daemon'])
+    ap.add_argument('positional', nargs='*', choices=SUBJECTS, help='subjects (same as --subjects)')
+    ap.add_argument('--subjects', nargs='*', default=None, choices=SUBJECTS)
     ap.add_argument('--record', action='store_true', help='write the "prepared" section into generation.json')
     ap.add_argument('--blender', default='5.3.0')
     a = ap.parse_args()
-    a.subjects = a.subjects or a.positional or ['female', 'male']
+    a.subjects = a.subjects or a.positional or ['angel-female', 'angel-male', 'daemon']
     bad = 0
     for s in a.subjects:
         glb = os.path.join(REPO, 'app', 'public', 'heads', f'{s}.glb')
         blend = os.path.join(HERE, s, 'source.blend')
-        errs, info = validate(glb, 2048 if s == 'daemon' else 1024)
+        if not os.path.exists(glb):
+            print(f'== {s}: FAIL  ({glb})\n  ERROR: runtime GLB missing (build it with build_head.py --subject {s})')
+            bad += 1
+            continue
+        errs, info = validate(glb, MAX_TEX.get(s, 1024))
         print(f'== {s}: {"OK" if not errs else "FAIL"}  ({glb})')
         print(json.dumps(info, indent=1))
         for e in errs:

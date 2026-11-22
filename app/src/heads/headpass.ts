@@ -1,5 +1,6 @@
 import type { GLContext } from '../gl/context';
 import { Program } from '../gl/program';
+import { findCavityUv } from './cavity';
 import type { GlbHead, Vec3 } from './glb';
 import { HeadMesh } from './headmesh';
 import { multiply, perspective, rotationX, rotationY, rotationZ, scaling, translation, transformPoint } from './mat4';
@@ -27,7 +28,8 @@ export interface HeadMotion {
  * Renders the head into a reduced-resolution G-buffer, attachment 0 (RGBA16F):
  *   r,g = view-space normal xy (z is reconstructed, front faces only)
  *   b   = 0.35 + 0.65 * nearness, 0 where there is no geometry (doubles as the soft silhouette / coverage)
- *   a   = mouth-cavity mask, proportional to jawOpen around the mouth landmark
+ *   a   = mouth-cavity mask: textured heads = the exact inner-mouth pouch (1 on its pixels at any jaw opening, incl.
+ *         the resting slit; see findCavityUv); porcelain heads = a soft blob proportional to jawOpen at the mouth
  * Attachment 1 (RGBA8) holds the albedo of textured heads (rgb linear, a = 1 on geometry; all 0 for porcelain heads).
  */
 export class HeadPass {
@@ -35,6 +37,8 @@ export class HeadPass {
   private readonly prog: Program;
   private mesh: HeadMesh | null = null;
   private lm: Record<string, Vec3> | null = null;
+  /** UV of the inner-mouth pouch (findCavityUv), null = none: no exact cavity mask */
+  private cavityUv: [number, number] | null = null;
   private fbo: WebGLFramebuffer | null = null;
   private depth: WebGLRenderbuffer | null = null;
   private tex: WebGLTexture | null = null;
@@ -68,10 +72,12 @@ export class HeadPass {
     this.mesh?.dispose();
     this.mesh = null;
     this.lm = null;
+    this.cavityUv = null;
     this.empty = true;
     if (glb) {
       this.mesh = new HeadMesh(this.gl, glb);
       this.lm = glb.landmarks;
+      this.cavityUv = findCavityUv(glb);
     }
   }
 
@@ -218,6 +224,7 @@ export class HeadPass {
     gl.uniform2f(p.uniforms['uDepth'], dist, 0.75);
     gl.uniform3f(p.uniforms['uMouth'], lm.mouth[0], lm.mouth[1], lm.mouth[2]);
     gl.uniform1f(p.uniforms['uJaw'], jaw);
+    gl.uniform2f(p.uniforms['uCavityUv'], this.cavityUv?.[0] ?? -1, this.cavityUv?.[1] ?? -1);
     mesh.draw();
 
     gl.bindVertexArray(null);

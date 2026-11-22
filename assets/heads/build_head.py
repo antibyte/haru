@@ -1,7 +1,7 @@
 """
 build_head.py - build a Haru runtime head (Blender 5.3, headless).
 
-    blender -b -P build_head.py -- --subject female|male|daemon [--stage STAGE] [--work DIR]
+    blender -b -P build_head.py -- --subject female|male|daemon|angel-female|angel-male [--stage STAGE] [--work DIR]
 
 Stages
   renders   Import + clean + normalise the VARCO mesh (full resolution) and
@@ -14,7 +14,8 @@ Stages
             shape key), downsize texture, landmarks -> morph targets (shape
             keys), demo action, save <subject>/source.blend, export
             app/public/heads/<subject>.glb, review renders (<subject>/review/).
-            Options: --review 0|1, --export 0|1, --target <max tris>.
+            Options: --review 0|1, --export 0|1, --target <max tris>,
+            --dark-strip <frac> (overrides DARK_STRIP; 0 = none), --tex-gain <g> (overrides TEX_GAIN).
   Validate the result afterwards with:  python validate_heads.py [--record]
 
 Coordinate systems
@@ -37,12 +38,17 @@ from mathutils import Vector, Matrix
 from mathutils.bvhtree import BVHTree
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SUBJECTS = ('female', 'male', 'daemon')
-TEXTURED_SUBJECTS = {'daemon': 2048}   # subject -> base-colour size; all others 1024
+SUBJECTS = ('female', 'male', 'daemon', 'angel-female', 'angel-male')
+# textured subjects: subject -> base-colour size; all others 1024 (the porcelain heads)
+TEXTURED_SUBJECTS = {'daemon': 2048, 'angel-female': 2048, 'angel-male': 2048}
 REPO = os.path.dirname(os.path.dirname(HERE))
-# per-subject texture prep (only subjects listed here are touched; female/male stay identical)
-DARK_STRIP = {'daemon': 0.08}     # fraction of the atlas height reserved at v=0 as a free strip for the inner mouth
-TEX_GAIN = {'daemon': 1.3}        # linear brightness gain (VARCO base colour is darker than the reference)
+# per-subject texture prep (only subjects listed here are touched; female/male stay identical).
+# Both can be overridden per build with --dark-strip <frac> / --tex-gain <g>.
+# fraction of the atlas height reserved at v=0 as a free (dark) strip for the inner mouth; needed because the
+# VARCO atlases are fully packed (find_free_uv finds no free block otherwise). 0 / absent = no strip.
+DARK_STRIP = {'daemon': 0.08, 'angel-female': 0.08, 'angel-male': 0.08}
+# linear brightness gain of the base colour (daemon: the VARCO base colour is darker than the reference)
+TEX_GAIN = {'daemon': 1.3, 'angel-female': 1.0, 'angel-male': 1.0}
 
 
 # --------------------------------------------------------------------------
@@ -593,7 +599,8 @@ def make_material(ob, size=1024):
 # --------------------------------------------------------------------------
 def reserve_dark_strip(ob, img, frac, gain=1.0):
     """Dense VARCO atlases have no free block: squeeze the atlas content vertically into v in [frac, 1] and
-    leave the bottom strip free (dark) for the inner-mouth faces. UVs are remapped accordingly."""
+    leave the bottom strip free (dark) for the inner-mouth faces. UVs are remapped accordingly.
+    The base colour is multiplied by `gain` on the way; frac = 0 applies only the gain (texture and UVs unchanged)."""
     w, h = img.size
     a = np.empty(w * h * 4, dtype=np.float32)
     img.pixels.foreach_get(a)
@@ -724,7 +731,11 @@ def build_pouch(bm, ring, slit_y, depth, half_h=0.022, half_gap=0.0028):
     (an ellipse hanging above/below the slit line), capped with a fan to a deeper centre vertex.
     Returns (new faces, upper rim coords, lower rim coords) in the glTF frame."""
     up_idx, lo_idx = split_rim(ring)
-    xmax = max(abs(v.co.x) for v in ring)
+    # half-width of the hole per side (the two corners of a decimated mesh rarely sit at the same |x|), so the
+    # lens below closes at the actual corner vertex on each side
+    xl = max(v.co.x for v in ring)
+    xr = -min(v.co.x for v in ring)
+    xmax_of = lambda x: xl if x >= 0 else xr
     # regularise the ragged rims: lie on a smooth lens around the slit line (upper arc above, lower arc below)
     for idxs, sgn in ((up_idx, 1.0), (lo_idx, -1.0)):
         vs = [ring[k] for k in idxs]
@@ -734,7 +745,7 @@ def build_pouch(bm, ring, slit_y, depth, half_h=0.022, half_gap=0.0028):
         for j, o in enumerate(order):
             v = vs[o]
             x = v.co.x
-            hgx = half_gap * math.sqrt(max(0.0, 1 - (x / xmax) ** 2)) + 0.0003
+            hgx = half_gap * math.sqrt(max(0.0, 1 - (x / xmax_of(x)) ** 2)) + 0.0003
             v.co = Vector((x, -float(zs_s[j]), float(slit_y(x)) + sgn * hgx))
     side = {}
     for k in up_idx:
@@ -745,7 +756,7 @@ def build_pouch(bm, ring, slit_y, depth, half_h=0.022, half_gap=0.0028):
     for k, v in enumerate(ring):
         g = np.array([v.co.x, v.co.z, -v.co.y])
         sy = float(slit_y(g[0]))
-        h = half_h * math.sqrt(max(0.0, 1 - (g[0] / xmax) ** 2))
+        h = half_h * math.sqrt(max(0.0, 1 - (g[0] / xmax_of(g[0])) ** 2))
         p = np.array([g[0] * 0.95, sy + side[k] * h, g[2] - depth])
         zs.append(p[2])
         inner.append(bm.verts.new(Vector((p[0], -p[2], p[1]))))
@@ -902,12 +913,23 @@ class Rig:
         self.J = np.array(lm['jawPivot'])
         self.K = np.array(lm['chin'])
         self.E = np.array(lm['eyeL'])
+        self.N = np.array(lm['noseTip'])
         self.w = abs(self.C[0])
         self.eye = L['eye']
         self.brow = L['brow']
         x, y, z = P[:, 0], P[:, 1], P[:, 2]
         self.x, self.y, self.z = x, y, z
         self.ax = np.abs(x)
+        # end of the ripped lip slit on each side (= the corner vertices of the cut rim, which can differ a little
+        # between the sides on a decimated mesh); without rims: the default cut width of cut_mouth
+        if rims is not None:
+            rx = np.concatenate([np.asarray(rims[0])[:, 0], np.asarray(rims[1])[:, 0]])
+            self.xe_side = (float(rx.max()), float(-rx.min()))
+        else:
+            self.xe_side = (0.92 * self.w, 0.92 * self.w)
+        self.xe = np.where(x >= 0, self.xe_side[0], self.xe_side[1])
+        # upper-lip height scale (mouth centre -> nose tip), used for vertical falloffs around the lip line
+        self.hu = float(self.N[1] - self.M[1])
         # face-front mask: keeps hair/ears/neck back untouched
         self.FM = ramp(z, 0.04, 0.16) * (1 - ramp(self.ax, 0.23, 0.33))
         self.ylip = self.lip_y(x)
@@ -919,14 +941,34 @@ class Rig:
         return self.M[1] + (self.C[1] - self.M[1]) * t * t
 
 
-def morph_jaw(R, deg=JAW_DEG):
+def morph_jaw(R, deg=JAW_DEG, corner=0.5, lens_pow=(3.0, 2.0)):
+    """Jaw opening: rotation about the X axis through the jaw pivot J by deg x a per-vertex weight Wt (0..1).
+
+    The lips stay joined at the commissures. Along the slit (t = |x| / xe, xe = end of the cut slit on that side)
+    the lower-lip weight falls from 1 (centre) to `corner` and the upper-lip weight rises from 0 to the same value:
+        lower(t) = 1 - (1 - corner) * t^p_lo,   upper(t) = corner * t^p_up,   (p_lo, p_up) = lens_pow,
+    so the opening (lower - upper, >= 0, zero only at t = 1 with a finite slope) is a lens/oval that tapers to a
+    closed point at each corner instead of ending in a vertical edge; p_lo > p_up keeps the lower lip low longer
+    (rounder bottom) while the upper lip arches down gradually towards the corners. The upper lip in the centre
+    stays put and the commissure (upper + lower lip there, and the skin lateral of it) drops as one unit by
+    ~corner x the lower-lip drop (a bit less in practice: the corner sits further back, nearer the pivot).
+    Away from the slit the lower field blends into the jaw-body profile (chin and lower face rotate as before)
+    and the upper field fades out over the upper lip / cheek within ~0.6 x hu (mouth -> nose-tip height), so
+    there is no shear band along the extended lip line lateral of the corners."""
     P, J, w = R.P, R.J, R.w
-    A = ramp(R.ylip - R.y, -0.0015, 0.0025)
-    B = (1 - 0.5 * ramp(R.ax, w * 0.45, w * 1.0)) * (1 - ramp(R.ax, w * 0.8, w * 3.0))
+    below = R.ylip - R.y                               # > 0 under the lip line
+    A = ramp(below, -0.0015, 0.0025)                   # lower-lip side of the slit
     C = ramp(R.z, J[2] + 0.03, J[2] + 0.24)
     ychin = R.K[1] - 0.012
     D = 1 - ramp(ychin - R.y, 0.0, 0.10)
-    Wt = A * B * C * D
+    lat = 1 - ramp(R.ax, w * 0.8, w * 3.0)             # lateral fade into the cheeks (unchanged)
+    body = 1 - 0.5 * ramp(R.ax, w * 0.45, w * 1.0)     # jaw body / chin profile (unchanged)
+    t = np.clip(R.ax / R.xe, 0.0, 1.0)
+    p_lo, p_up = lens_pow if isinstance(lens_pow, (tuple, list)) else (lens_pow, lens_pow)
+    lo = 1 - (1 - corner) * t ** p_lo
+    lo = lo + (body - lo) * ramp(below, 0.15 * R.hu, 0.45 * R.hu)
+    up = corner * t ** p_up * (1 - ramp(-below, 0.03 * R.hu, 0.6 * R.hu))
+    Wt = (A * lo + (1 - A) * up) * lat * C * D
     Q = rot_x(P, J, np.radians(deg) * Wt)
     return Q - P
 
@@ -977,13 +1019,16 @@ def morph_smile(R):
     d = np.zeros_like(R.P)
     w = R.w
     sgn = np.sign(R.x)
-    g = gauss(((R.ax - w) / 0.07) ** 2 + ((R.y - R.C[1]) / 0.06) ** 2, 1.0) * R.FM
-    d[:, 1] += 0.050 * g
-    d[:, 0] += sgn * 0.038 * g
-    d[:, 2] += -0.030 * g
+    # U-shaped x-profile: (ax/w)^2 is flat (C1) at the centre, peaks at the corner and
+    # decays lateral of it; magnitudes scale with the mouth half-width w.
+    sx = (R.ax / w) ** 2 * np.exp(-(np.maximum(R.ax - w, 0.0) / 0.07) ** 2)
+    g = sx * gauss(((R.y - R.C[1]) / 0.06) ** 2, 1.0) * R.FM
+    d[:, 1] += 0.32 * w * g
+    d[:, 0] += sgn * 0.25 * w * g
+    d[:, 2] += -0.20 * w * g
     h, v = lip_band(R, sy=0.04, x0=0.3, x1=1.0, fall=(1.2, 2.2))
     m = h * v * R.FM
-    d[:, 1] += 0.020 * m * np.clip(R.ax / w, 0, 1.2) ** 2
+    d[:, 1] += 0.20 * w * m * np.clip(R.ax / w, 0, 1.2) ** 2
     cy = R.M[1] + 0.11
     cg = gauss(((R.ax - 0.165) / 0.075) ** 2 + ((R.y - cy) / 0.07) ** 2, 1.0) * R.FM
     d[:, 1] += 0.022 * cg
@@ -1322,8 +1367,11 @@ def stage_build(args):
     finish_mesh(ob)
     tex_size = TEXTURED_SUBJECTS.get(subj, 1024)
     img = make_material(ob, tex_size)
-    if subj in DARK_STRIP and img is not None:
-        reserve_dark_strip(ob, img, DARK_STRIP[subj], TEX_GAIN.get(subj, 1.0))
+    strip = float(args['dark-strip']) if 'dark-strip' in args else DARK_STRIP.get(subj, 0.0)
+    gain = float(args['tex-gain']) if 'tex-gain' in args else TEX_GAIN.get(subj, 1.0)
+    assert 0.0 <= strip < 0.5 and gain > 0, f'bad texture prep: dark strip {strip}, gain {gain}'
+    if img is not None and (strip > 0 or gain != 1.0):   # female/male: neither -> texture untouched
+        reserve_dark_strip(ob, img, strip, gain)
     dbg = {}
     cut = cut_mouth(ob, L, debug=dbg)
     print('mouth', {k: v for k, v in cut.items() if k != 'rims'})

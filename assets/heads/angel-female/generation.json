@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "subject": "angel-female",
+  "date": "2026-11-22T14:23:04.089Z",
+  "reference_generator": "Codex CLI image generation",
+  "reference_file": "reference.png",
+  "reference_sha256": "6b65ec5d9577ff97eed60608715bf7a946a28966b13d704d3c426b68dd9a3954",
+  "prompt_file": "prompt.md",
+  "upload_file": "reference.png",
+  "varco": {
+    "flowId": "569f7763-02a8-4b5d-8119-c0712d0c6045",
+    "imageNodeId": "7c5e33f8-6c2b-4538-8caa-19b80aeace0e",
+    "generateNodeId": "a59de246-e0af-43a3-a1ae-587170222457",
+    "taskId": "54e24bc3-6260-4d26-ba5c-e89ed7ab6f5a",
+    "intrinsics": {
+      "count": [
+        {
+          "type": "int",
+          "value": 1
+        }
+      ],
+      "polygonCount": [
+        {
+          "type": "int",
+          "value": 100000
+        }
+      ],
+      "topology": [
+        {
+          "type": "string",
+          "value": "tri"
+        }
+      ],
+      "textureSize": [
+        {
+          "type": "int",
+          "value": 2048
+        }
+      ],
+      "generateTexture": [
+        {
+          "type": "int",
+          "value": 1
+        }
+      ],
+      "usePbrTexture": [
+        {
+          "type": "int",
+          "value": 0
+        }
+      ],
+      "tPose": [
+        {
+          "type": "int",
+          "value": 0
+        }
+      ],
+      "useAlpha": [
+        {
+          "type": "int",
+          "value": 0
+        }
+      ],
+      "license": [
+        {
+          "type": "string",
+          "value": "PRIVATE"
+        }
+      ]
+    },
+    "status": "success",
+    "durationMinutes": 1.86
+  },
+  "retained_sources": {
+    "varco-source.glb": {
+      "bytes": 14127960,
+      "sha256": "5ac430048164db527046ea9d7fe688d9001fc38c4f8654bb79be6cbf0ddddf1e"
+    }
+  }
+}
