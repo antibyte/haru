@@ -94,6 +94,35 @@ foreach ($v in $Variants) {
   }
 
   $exe = Join-Path $dest 'speech.exe'
+
+  if ($v -eq 'cuda') {
+    # Diagnostic only: list the DLLs speech.exe imports (never fails the build).
+    try {
+      $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+      if (Test-Path $vswhere) {
+        $vc = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+        $dumpbin = if ($vc) {
+          Get-ChildItem -Path (Join-Path $vc 'VC\Tools\MSVC') -Recurse -Filter dumpbin.exe -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match 'Hostx64\\x64' } | Select-Object -First 1
+        }
+        if ($dumpbin) {
+          Write-Host "--- dumpbin /dependents $exe" -ForegroundColor Cyan
+          & $dumpbin.FullName /nologo /dependents $exe
+        } else {
+          Write-Host "dumpbin not found; skipping dependents listing."
+        }
+      }
+    } catch {
+      Write-Host "dumpbin diagnostic skipped: $($_.Exception.Message)"
+    }
+
+    $nvcuda = Join-Path $env:SystemRoot 'System32\nvcuda.dll'
+    if (-not (Test-Path $nvcuda)) {
+      Write-Warning "nvcuda.dll not found ($nvcuda): no NVIDIA driver on this machine. speech.exe imports nvcuda.dll (CUDA driver API), so it cannot start here (STATUS_DLL_NOT_FOUND). Skipping 'speech --version' and 'devices --json' for the cuda variant; the build output and bundled CUDA DLLs were verified."
+      continue
+    }
+  }
+
   Write-Host "--- $exe --version" -ForegroundColor Cyan
   & $exe --version
   Assert-Native "speech --version ($v)"

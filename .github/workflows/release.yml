@@ -239,7 +239,7 @@ jobs:
           dpkg-deb -c "$deb" | grep backends/
           echo "::endgroup::"
           for v in vulkan cpu; do
-            if ! dpkg-deb -c "$deb" | grep -E "^-rwx.* \./usr/lib/.+/backends/$v/speech$" >/dev/null; then
+            if ! dpkg-deb -c "$deb" | grep -E "^-rwx.* (\./)?usr/lib/.+/backends/$v/speech$" >/dev/null; then
               echo "::error::$deb has no executable backends/$v/speech."
               exit 1
             fi

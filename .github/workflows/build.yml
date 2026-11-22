@@ -88,8 +88,9 @@ jobs:
           cuda: '12.6.3'
           method: network
           sub-packages: '["nvcc","cudart","cublas","cublas_dev","thrust","visual_studio_integration"]'
-      # No GPU on the runner: this only proves that the CUDA variant compiles and links.
-      # build-backends.ps1 runs `speech --version` and `devices --json`, which must not need a GPU.
+      # No GPU on the runner: this only proves that the CUDA variant compiles, links and bundles the CUDA DLLs.
+      # speech.exe imports nvcuda.dll (CUDA driver API, VMM), which only exists with an NVIDIA driver, so
+      # build-backends.ps1 skips `speech --version` and `devices --json` for cuda when nvcuda.dll is missing.
       - name: Build the CUDA backend
         shell: pwsh
         run: pwsh scripts/build-backends.ps1 -Variants cuda
