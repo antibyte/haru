@@ -4,7 +4,7 @@ A desktop app for a real-time conversation with the speech model **Haru-4B**. Yo
 
 Haru runs locally: the app starts the `speech worker` from [speech.cpp](https://github.com/nyosegawa/speech.cpp) v0.11.1 as a child process and uses the GPU (Vulkan or CUDA), with the CPU as a last resort.
 
-![Haru in conversation](docs/screenshots/m3-live-talking.png)
+![Haru in conversation with the angel](docs/screenshots/m5-talking-angel.png)
 
 ## Features
 
@@ -17,9 +17,9 @@ Haru runs locally: the app starts the `speech worker` from [speech.cpp](https://
 
 Screenshots:
 
-| Start | Idle | Conversation | Japanese |
+| Start | Choose a persona | Demon | Japanese |
 |---|---|---|---|
-| ![Boot](docs/screenshots/m2-boot.png) | ![Idle](docs/screenshots/m2-idle.png) | ![Conversation](docs/screenshots/m2-talking-2.png) | ![Japanese](docs/screenshots/m2-ja.png) |
+| ![Model download on first start](docs/screenshots/m5-boot.png) | ![Persona choice: angel or demon](docs/screenshots/m5-chooser.png) | ![Conversation with the demon](docs/screenshots/m5-talking-demon.png) | ![Conversation in Japanese](docs/screenshots/m5-ja.png) |
 
 ## Requirements
 
@@ -255,7 +255,8 @@ npm --prefix app run dev
 | URL | Scenario |
 |---|---|
 | `http://localhost:5173/?mock` | German conversation with boot, download and replies |
-| `http://localhost:5173/?mock=ja` | Japanese script |
+| `http://localhost:5173/?mock=en` | English script and English UI |
+| `http://localhost:5173/?mock=ja` | Japanese script and Japanese UI |
 | `http://localhost:5173/?mock=error` | Boot error (`noBackend`) with retry |
 | `http://localhost:5173/?mock=lag` | Conversation that ends at the lag limit |
 | `http://localhost:5173/?mock=slow` | Mock latency rises from 300 to 900 ms (20 s) and falls again (20 s); shows the model-first controller |

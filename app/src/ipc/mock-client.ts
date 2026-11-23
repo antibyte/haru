@@ -5,7 +5,7 @@ import {
   type Persona, type SaveSettingsResult, type Settings, type StateEvent, type VizFrame, type WordPiece,
 } from './types';
 
-export interface MockOptions { lang: 'de' | 'ja'; fail?: 'boot' | 'lag'; slow?: boolean }
+export interface MockOptions { lang: 'de' | 'en' | 'ja'; fail?: 'boot' | 'lag'; slow?: boolean }
 
 export const MOCK_TOTAL_BYTES = 6_623_102_720;
 const FRAME_HZ = 7.5;
@@ -16,9 +16,11 @@ const LOADING_MS = 1500;
 const START_MS = 1500;
 const LAG_AFTER_MS = 22000;
 
-export const MOCK_SCRIPTS: Record<'de' | 'ja', string[]> = {
+export const MOCK_SCRIPTS: Record<'de' | 'en' | 'ja', string[]> = {
   de: [' Hal', 'lo', ',', ' ich', ' bin', ' Ha', 'ru', '.', ' ', '', ' Schön', ',', ' dass', ' du', ' da', ' bist', '!', ' ', '',
     ' Wor', 'über', ' möch', 'test', ' du', ' heu', 'te', ' spre', 'chen', '?', ' '],
+  en: [' Hel', 'lo', ',', ' I', "'m", ' Ha', 'ru', '.', ' ', '', ' Good', ' to', ' see', ' you', '!', ' ', '',
+    ' What', ' would', ' you', ' like', ' to', ' talk', ' a', 'bout', '?', ' '],
   ja: ['こんに', 'ちは', '。', '', '', '今日は', 'いい', '天気', 'ですね', '。', '', ''],
 };
 
@@ -44,7 +46,7 @@ function bandsFor(n: number, peak: number, amp: number, jitter: number): number[
 export class MockClient implements HaruClient {
   private state: StateEvent = { state: 'booting', backend: null, device: null, error: null, warning: null };
   private listeners = new Set<(e: StateEvent) => void>();
-  private settings: Settings = { ...DEFAULT_SETTINGS };
+  private settings: Settings;
   private modelPresent = false;
   private muted = false;
   private _lastPersona: Persona | null = null;
@@ -54,6 +56,8 @@ export class MockClient implements HaruClient {
   private readonly timeline: string[];
 
   constructor(private readonly options: MockOptions = { lang: 'de' }) {
+    // The UI language follows the scripted conversation (?mock=en / ?mock=ja); German stays the default.
+    this.settings = { ...DEFAULT_SETTINGS, language: options.lang };
     this.timeline = [...MOCK_SCRIPTS[options.lang], ...new Array<string>(GAP_FRAMES).fill('')];
   }
 
