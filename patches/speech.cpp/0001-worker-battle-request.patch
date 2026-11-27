@@ -1,0 +1,1462 @@
+From: Haru <noreply@haru.invalid>
+Subject: [PATCH] worker : add the battle request, two conversations of one model that hear each other
+
+The battle request holds two conversations of the loaded dialogue model and
+steps them in lockstep: in frame t each hears the other's frame t - 1, at the
+model's rate, without audio from the caller. Each frame of each speaker goes
+out as a chunk with "speaker" (0 or 1, the index in "speakers") beside seq, pcm
+and text, and end carries the frames. max_frames sets each conversation's
+max_seconds, so that the keys and values held are those of the battle alone.
+A hang_up, a cancel or the end of stdin stops it after whole frames; ready
+lists "features":["battle"] for a dialogue model. Protocol 4 is unchanged for
+every other request. Adds worker-battle-check (the reading and the lockstep on
+fake speakers, no model) and checks/smoke/worker_battle_smoke.py.
+
+---
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 93d8701..8ff4f5a 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -430,6 +430,7 @@ add_executable(speech-cli
+     tools/common/utterances.cpp
+     tools/worker/worker.cpp
+     tools/worker/inbox.cpp
++    tools/worker/battle.cpp
+     tools/server/server.cpp
+     tools/server/audio-speech.cpp
+     tools/server/audio-enhancements.cpp
+@@ -681,3 +682,15 @@ target_link_libraries(drama3-prompt-check PRIVATE drama3)
+ 
+ add_executable(fft-check checks/common/fft-check.cpp)
+ target_link_libraries(fft-check PRIVATE speechcommon)
++
++# The worker's battle apart from any model: its lines read and refused, and its lockstep on fake speakers.
++add_executable(worker-battle-check checks/worker/worker-battle-check.cpp tools/worker/battle.cpp tools/common/request-options.cpp
++               tools/common/transcript.cpp tools/common/json-reader.cpp)
++target_include_directories(worker-battle-check PRIVATE tools/common tools/worker)
++target_link_libraries(worker-battle-check PRIVATE speech-static)
++
++# The worker's inbox on battle lines apart from any model: its refusals, its hang_up and cancel, and the lines it drops.
++add_executable(worker-inbox-check checks/worker/worker-inbox-check.cpp tools/worker/inbox.cpp tools/worker/battle.cpp
++               tools/common/request-options.cpp tools/common/transcript.cpp tools/common/json-reader.cpp)
++target_include_directories(worker-inbox-check PRIVATE tools/common tools/worker)
++target_link_libraries(worker-inbox-check PRIVATE speech-static)
+diff --git a/checks/smoke/worker_battle_smoke.py b/checks/smoke/worker_battle_smoke.py
+new file mode 100644
+index 0000000..63b3c23
+--- /dev/null
++++ b/checks/smoke/worker_battle_smoke.py
+@@ -0,0 +1,157 @@
++"""Drives `speech worker` with a dialogue model through battles, two conversations of the model that hear each other in
++place of a caller, with every line checked by worker_client.py: one JSON object per line, and one terminal message per
++request and nothing after it.
++
++It checks: that ready lists the feature battle; that a battle of 8 frames sends, frame after frame, speaker 0's chunk
++and then speaker 1's, both numbered by the frame from 0, each a frame of the model's samples with a text, and ends with
++end and its 8 frames; that the same battle
++again sends the same chunks; that a hang_up ends a running battle after whole frames with end and its frames, and that
++a chunk to a running battle is refused without an id; that a cancel ends a running battle with cancelled, after which
++its chunk and hang_up are dropped; each refusal with its code and option; that a conversation after the battles runs as
++before, its chunks without a speaker; and that stdin closing ends a running battle as its hang_up does.
++
++usage: python3 checks/smoke/worker_battle_smoke.py <speech> <model.gguf> [-- worker options...]
++"""
++
++import base64
++import sys
++
++from worker_client import Worker, short
++
++args = sys.argv[1:]
++flags = args[args.index("--") + 1:] if "--" in args else []
++args = args[:args.index("--")] if "--" in args else args
++if len(args) != 2:
++    raise SystemExit(__doc__)
++speech, model = args
++
++# A short battle, and the 10 minutes of a long one, whose keys and values are 0.3 GB a conversation for Haru-4B.
++FRAMES, TEN_MINUTES = 8, 4500
++SITUATION = "Haru and Mephisto argue whether a white lie is allowed. No human is present."
++# Speaker 0 opens and speaker 1 listens first.
++SPEAKERS = [
++    {"language": "en", "name": "Haru", "other_name": "Mephisto", "gender": "female", "backchannel": "mid",
++     "persona": "Haru is an angel who speaks gently and warmly and sides with honesty.",
++     "relationship": "Mephisto is a demon in the same machine whom Haru hopes to win over.",
++     "situation": SITUATION, "speak_first": True, "seed": 1001},
++    {"language": "en", "name": "Mephisto", "other_name": "Haru", "gender": "male", "backchannel": "low",
++     "persona": "Mephisto is an old demon who speaks slowly and coldly and praises the selfish side of every question.",
++     "relationship": "Haru is an angel in the same machine whom Mephisto wants to lead astray.",
++     "situation": SITUATION, "speak_first": False, "seed": 2002},
++]
++
++w = Worker(speech, model, flags)
++w.check_model_information()
++info = w.ready["model"]
++if info["task"] != "dialogue" or w.ready.get("features") != ["battle"]:
++    raise SystemExit(f"ready lists the features {w.ready.get('features')!r} for a model of {info['task']}; a dialogue model's are ['battle']")
++frame, rate = info["frame_samples"], info["sample_rate"]
++longest = next(o["maximum"] for o in info["options"] if o["name"] == "max_seconds")
++MOST = int(longest * rate / frame + 1e-9)
++SILENCE = base64.b64encode(bytes(frame * 2)).decode()
++print(f"ready: {info['name']}, the feature battle")
++
++
++def battle(id, max_frames=FRAMES, speakers=SPEAKERS):
++    w.request({"type": "battle", "id": id, "speakers": speakers, "max_frames": max_frames})
++
++
++def frames_of(messages):
++    """A battle's messages up to its terminal one, checked to be its chunks in pairs, speaker 0's and then speaker 1's
++    frame, numbered by the frame from 0, a frame of samples each: each speaker's PCM and text, the frames and the
++    terminal message."""
++    *chunks, last = messages
++    pcm, text = [b"", b""], ["", ""]
++    for i, m in enumerate(chunks):
++        seq, speaker = i // 2, i % 2
++        if m["type"] != "chunk" or m.get("seq") != seq or m.get("speaker") != speaker or not isinstance(m.get("text"), str):
++            raise SystemExit(f"message {i} of a battle is {short(m)}, not speaker {speaker}'s frame {seq}")
++        piece = base64.b64decode(m["pcm"])
++        if len(piece) != frame * 2:
++            raise SystemExit(f"speaker {speaker}'s frame {seq} holds {len(piece) // 2} samples, not a frame of {frame}")
++        pcm[speaker] += piece
++        text[speaker] += m["text"]
++    if len(chunks) % 2:
++        raise SystemExit(f"a battle ended after {len(chunks)} chunks, not two for each frame")
++    return pcm, text, len(chunks) // 2, last
++
++
++def nothing_more(why):
++    """Checks, through an info answered at once, that the lines sent before it got no answer."""
++    w.request({"type": "info", "id": "sentinel"})
++    w.terminal("sentinel", "end")
++    stray = [m for m in w.backlog if "id" not in m or m["id"] not in w.in_flight]
++    if stray:
++        raise SystemExit(f"{why}, and the worker answered {short(stray[0])}")
++
++
++battle("a")
++pcm, text, n, end = frames_of(w.until("a"))
++if end["type"] != "end" or end.get("frames") != FRAMES or n != FRAMES:
++    raise SystemExit(f"a battle of {FRAMES} frames ended with {short(end)} after {n} frames")
++print(f"a battle of {FRAMES} frames: speaker 0's chunk and then speaker 1's for each frame, numbered from 0; end with its frames")
++
++battle("b")
++again, again_text, _, _ = frames_of(w.until("b"))
++if (again, again_text) != (pcm, text):
++    raise SystemExit("the same battle with the same seeds gave other frames")
++print("the same battle again: the same frames and text")
++
++# A hang_up ends a running battle after the frame under way; a chunk to it is refused without an id.
++battle("c", TEN_MINUTES)
++head = [w.next_for("c") for _ in range(8)]
++w.send({"type": "chunk", "id": "c", "seq": 0, "pcm": SILENCE})
++w.error_without_id("invalid_argument", "id")
++w.send({"type": "hang_up", "id": "c"})
++_, _, n, end = frames_of(head + w.until("c"))
++if end["type"] != "end" or end.get("frames") != n or not 4 <= n < TEN_MINUTES:
++    raise SystemExit(f"a battle hung up after 4 frames ended with {short(end)} after {n} frames")
++print("hang_up: a running battle ended after whole frames with end and its frames; a chunk to it refused without an id")
++
++# A cancel ends a running battle; the chunk and hang_up its caller sends after the answer are dropped.
++battle("d", TEN_MINUTES)
++w.next_for("d")
++w.next_for("d")
++w.send({"type": "cancel", "id": "d"})
++w.terminal("d", "cancelled")
++w.send({"type": "chunk", "id": "d", "seq": 0, "pcm": SILENCE})
++w.send({"type": "hang_up", "id": "d"})
++nothing_more("a chunk and a hang_up followed a cancelled battle")
++print("cancel: a running battle ended with cancelled; its later chunk and hang_up dropped")
++
++for message, code, option in [
++        ({"type": "battle", "id": "e", "max_frames": FRAMES}, "invalid_argument", "speakers"),
++        ({"type": "battle", "id": "f", "speakers": SPEAKERS[:1], "max_frames": FRAMES}, "invalid_argument", "speakers"),
++        ({"type": "battle", "id": "g", "speakers": [SPEAKERS[0], {**SPEAKERS[1], "sample_rate": rate}], "max_frames": FRAMES},
++         "invalid_argument", "sample_rate"),
++        ({"type": "battle", "id": "h", "speakers": [{**SPEAKERS[0], "max_seconds": 60}, SPEAKERS[1]], "max_frames": FRAMES},
++         "invalid_argument", "max_seconds"),
++        ({"type": "battle", "id": "i", "speakers": SPEAKERS, "max_frames": FRAMES, "seed": 7}, "invalid_argument", "seed"),
++        ({"type": "battle", "id": "j", "speakers": SPEAKERS}, "invalid_argument", "max_frames"),
++        ({"type": "battle", "id": "k", "speakers": SPEAKERS, "max_frames": 0}, "invalid_argument", "max_frames"),
++        ({"type": "battle", "id": "l", "speakers": SPEAKERS, "max_frames": MOST + 1}, "out_of_range", "max_frames"),
++        ({"type": "battle", "id": "m", "speakers": [{**SPEAKERS[0], "speed": 1.5}, SPEAKERS[1]], "max_frames": FRAMES},
++         "unsupported", "speed")]:
++    w.request(message)
++    w.terminal(message["id"], "error", code, option)
++print("refusals: speakers missing or one, a speaker's member that is no option, a speaker's max_seconds, a seed beside "
++      "speakers, max_frames missing, 0 or past the model's longest conversation, an option the model does not take")
++
++w.request({"type": "dialogue", "id": "n", "sample_rate": rate, **SPEAKERS[0], "max_seconds": 60})
++for seq in range(3):
++    w.send({"type": "chunk", "id": "n", "seq": seq, "pcm": SILENCE})
++w.send({"type": "hang_up", "id": "n"})
++said = w.until("n")
++end = said[-1]
++if end["type"] != "end" or end.get("frames") != 4 or end.get("samples") != 4 * frame or any("speaker" in m for m in said):
++    raise SystemExit(f"a conversation after the battles ended with {short(end)}")
++print("a conversation after the battles: four frames without a speaker, end with frames and samples as before")
++
++battle("o", TEN_MINUTES)
++head = [w.next_for("o"), w.next_for("o")]
++rest = w.close()
++_, _, n, end = frames_of(head + [m for m in rest if m.get("id") == "o"])
++if end["type"] != "end" or end.get("frames") != n or n < 1:
++    raise SystemExit(f"stdin's end gave the battle {short(end)} after {n} frames, not its end")
++print("stdin closed: the running battle ended with end after whole frames; the worker exited with 0")
++print("battle smoke passed")
+diff --git a/checks/worker/worker-battle-check.cpp b/checks/worker/worker-battle-check.cpp
+new file mode 100644
+index 0000000..ecb6c63
+--- /dev/null
++++ b/checks/worker/worker-battle-check.cpp
+@@ -0,0 +1,222 @@
++// Checks the worker's battle apart from any model: battle lines read, each refusal naming its input, a speaker's error
++// as the battle reports it, and the lockstep on fake speakers whose frames tell their speaker and number, so that what
++// each heard shows the order: in frame t each speaker hears the other's frame t - 1, speaker 0's frame goes out before
++// speaker 1's, and a hang_up or a cancel ends the battle before a frame. It needs no model, device or dump.
++//
++// usage: worker-battle-check
++
++#include <cstdint>
++#include <cstdio>
++#include <functional>
++#include <stdexcept>
++#include <string>
++#include <variant>
++#include <vector>
++
++#include "battle.h"
++#include "json-reader.h"
++
++namespace {
++
++int failures = 0;
++
++void expect(bool ok, const std::string & what) {
++    if (ok) return;
++    failures++;
++    std::printf("FAILED: %s\n", what.c_str());
++}
++
++const std::string kSpeaker0 = R"({"language":"de","name":"Haru","other_name":"Mephisto","speak_first":true,"seed":1001,"temperature":0.6})";
++const std::string kSpeaker1 = R"({"language":"de","name":"Mephisto","other_name":"Haru","speak_first":false,"seed":2002,"gender":null})";
++const std::string kTwo = "[" + kSpeaker0 + "," + kSpeaker1 + "]";
++
++/** A battle line with `speakers` and the members `rest`, which starts with a comma or is empty. */
++std::string battle_line(const std::string & speakers, const std::string & rest) {
++    return R"({"type":"battle","id":"b","speakers":)" + speakers + rest + "}";
++}
++
++/** Expects `line` refused, naming `want`, with a reason. */
++void refused(const std::string & line, const std::string & want) {
++    Battle b;
++    std::string option, problem;
++    const bool read = read_battle(parse_json(line), b, option, problem);
++    expect(!read, "read where it names " + want + ": " + line);
++    expect(read || option == want, "refused naming " + option + " where it names " + want + ": " + line);
++    expect(read || !problem.empty(), "refused without a reason: " + line);
++}
++
++/** The integer value of `option` among `options`, or -1 where it is absent or of another type. */
++int64_t integer_of(const std::vector<RequestOption> & options, speech_option option) {
++    for (const RequestOption & o : options) {
++        if (o.option != option) continue;
++        const int64_t * v = std::get_if<int64_t>(&o.value);
++        return v ? *v : -1;
++    }
++    return -1;
++}
++
++void check_reading() {
++    Battle b;
++    std::string option, problem;
++    expect(read_battle(parse_json(battle_line(kTwo, R"(,"max_frames":4500)")), b, option, problem),
++           "a whole battle line is refused: " + option + ": " + problem);
++    expect(b.max_frames == 4500, "max_frames is " + std::to_string(b.max_frames) + ", not 4500");
++    expect(b.speakers[0].size() == 6, "speaker 0 has " + std::to_string(b.speakers[0].size()) + " options, not 6");
++    // gender is null, which counts as left out.
++    expect(b.speakers[1].size() == 5, "speaker 1 has " + std::to_string(b.speakers[1].size()) + " options, not 5");
++    expect(integer_of(b.speakers[0], SPEECH_OPT_SEED) == 1001 && integer_of(b.speakers[1], SPEECH_OPT_SEED) == 2002,
++           "the seeds are not each speaker's own");
++    Battle least;
++    expect(read_battle(parse_json(battle_line("[{},{}]", R"(,"max_frames":1)")), least, option, problem) && least.max_frames == 1,
++           "a battle of one frame without options is refused: " + problem);
++    Battle most;
++    expect(read_battle(parse_json(battle_line("[{},{}]", R"(,"max_frames":2147483647)")), most, option, problem) &&
++               most.max_frames == 2147483647,
++           "a battle of INT_MAX frames is refused: " + problem);
++
++    refused(R"({"type":"battle","id":"b","max_frames":8})", "speakers");
++    refused(battle_line("{}", R"(,"max_frames":8)"), "speakers");
++    refused(battle_line("[" + kSpeaker0 + "]", R"(,"max_frames":8)"), "speakers");
++    refused(battle_line("[" + kSpeaker0 + "," + kSpeaker1 + "," + kSpeaker0 + "]", R"(,"max_frames":8)"), "speakers");
++    refused(battle_line("[" + kSpeaker0 + R"(,"Mephisto"])", R"(,"max_frames":8)"), "speakers");
++    refused(battle_line(R"([{"sample_rate":24000},{}])", R"(,"max_frames":8)"), "sample_rate");
++    refused(battle_line(R"([{},{"max_seconds":600}])", R"(,"max_frames":8)"), "max_seconds");
++    refused(battle_line(R"([{"seed":"1001"},{}])", R"(,"max_frames":8)"), "seed");
++    refused(battle_line(R"([{},{"speak_first":1}])", R"(,"max_frames":8)"), "speak_first");
++    refused(battle_line(kTwo, R"(,"max_frames":8,"seed":7)"), "seed");
++    refused(battle_line(kTwo, R"(,"max_frames":8,"sample_rate":24000)"), "sample_rate");
++    refused(battle_line(kTwo, ""), "max_frames");
++    for (const char * frames : {"0", "-3", "1.5", "1e3", "\"8\"", "true", "2147483648", "99999999999999"}) {
++        refused(battle_line(kTwo, std::string(R"(,"max_frames":)") + frames), "max_frames");
++    }
++}
++
++void check_failures() {
++    const Failure memory = speaker_failure(1, Failure("out_of_memory", "max_seconds", "the keys and values do not fit"));
++    expect(memory.code() == "out_of_memory" && memory.option() == "max_frames" &&
++               std::string(memory.what()) == "speaker 1: the keys and values do not fit",
++           "speaker 1's lack of memory became " + memory.code() + " (" + memory.option() + "): " + memory.what());
++    const Failure option = speaker_failure(0, Failure("unsupported", "speed", "Haru-4B does not take speed"));
++    expect(option.code() == "unsupported" && option.option() == "speed" && std::string(option.what()) == "speaker 0: Haru-4B does not take speed",
++           "speaker 0's refused option became " + option.code() + " (" + option.option() + "): " + option.what());
++}
++
++/**
++ * A speaker whose frame t holds `samples` copies of 100 * (index + 1) + t and the text "index:t", and which keeps each
++ * frame it heard; from frame `short_from` on, where it is set, its frames are a sample short.
++ */
++class Fake : public BattleSpeaker {
++public:
++    Fake(int index, int64_t samples) : index_(index), samples_(samples) {}
++
++    BattleFrame start() override {
++        starts++;
++        return next();
++    }
++
++    BattleFrame step(const std::vector<float> & h) override {
++        heard.push_back(h);
++        return next();
++    }
++
++    int starts = 0;
++    std::vector<std::vector<float>> heard;
++    int64_t short_from = -1;
++
++private:
++    BattleFrame next() {
++        const int64_t t = given_++;
++        const int64_t n = short_from >= 0 && t >= short_from ? samples_ - 1 : samples_;
++        return {std::vector<float>((size_t) n, (float) (100 * (index_ + 1) + t)), std::to_string(index_) + ":" + std::to_string(t)};
++    }
++
++    int index_;
++    int64_t samples_;
++    int64_t given_ = 0;
++};
++
++/** What the sink of a battle got: "speaker/seq/text" for each frame, in order. */
++using Sent = std::vector<std::string>;
++
++std::function<void(int, int64_t, const BattleFrame &)> into(Sent & sent) {
++    return [&sent](int speaker, int64_t seq, const BattleFrame & f) {
++        sent.push_back(std::to_string(speaker) + "/" + std::to_string(seq) + "/" + f.text);
++    };
++}
++
++void check_lockstep() {
++    Fake a(0, 4), b(1, 4);
++    Sent sent;
++    int asks = 0;
++    const BattleEnd end = run_battle(a, b, 5, 4, [&] { asks++; return BattleAsk::GoOn; }, into(sent));
++    expect(end.frames == 5 && end.stop == BattleStop::MaxFrames, "a battle of 5 frames ended after " + std::to_string(end.frames));
++    expect(asks == 5, "the battle asked " + std::to_string(asks) + " times, not once before each of its 5 frames");
++    expect(a.starts == 1 && b.starts == 1, "a speaker did not start exactly once");
++    Sent want;
++    for (int t = 0; t < 5; t++) {
++        for (int i = 0; i < 2; i++) want.push_back(std::to_string(i) + "/" + std::to_string(t) + "/" + std::to_string(i) + ":" + std::to_string(t));
++    }
++    expect(sent == want, "the frames went out in another order than speaker 0's and then speaker 1's, frame after frame");
++    bool crossed = a.heard.size() == 4 && b.heard.size() == 4;
++    for (size_t t = 0; crossed && t < 4; t++) {
++        crossed = a.heard[t] == std::vector<float>(4, (float) (200 + t)) && b.heard[t] == std::vector<float>(4, (float) (100 + t));
++    }
++    expect(crossed, "in some frame a speaker heard other than the other's frame before");
++}
++
++void check_stops() {
++    {
++        Fake a(0, 4), b(1, 4);
++        Sent sent;
++        int asks = 0;
++        const BattleEnd end = run_battle(a, b, 4500, 4, [&] { return ++asks > 3 ? BattleAsk::HangUp : BattleAsk::GoOn; }, into(sent));
++        expect(end.frames == 3 && end.stop == BattleStop::HangUp && sent.size() == 6,
++               "a hang_up before frame 3 ended after " + std::to_string(end.frames) + " frames with " + std::to_string(sent.size()) + " sent");
++    }
++    {
++        Fake a(0, 4), b(1, 4);
++        Sent sent;
++        const BattleEnd end = run_battle(a, b, 4500, 4, [] { return BattleAsk::Cancel; }, into(sent));
++        expect(end.frames == 0 && end.stop == BattleStop::Cancel && sent.empty() && a.starts == 0 && b.starts == 0,
++               "a cancel before frame 0 still ran a speaker");
++    }
++    {
++        Fake a(0, 4), b(1, 4);
++        Sent sent;
++        const BattleEnd end = run_battle(a, b, 4500, 4, [] { return BattleAsk::HangUp; }, into(sent));
++        expect(end.frames == 0 && end.stop == BattleStop::HangUp && sent.empty() && a.starts == 0 && b.starts == 0,
++               "a hang_up before frame 0 still ran a speaker");
++    }
++    {
++        Fake a(0, 4), b(1, 4);
++        b.short_from = 2;
++        Sent sent;
++        std::string what;
++        try {
++            run_battle(a, b, 10, 4, [] { return BattleAsk::GoOn; }, into(sent));
++        } catch (const std::runtime_error & e) {
++            what = e.what();
++        }
++        expect(what == "frame 2 of speaker 1 is 3 samples, not a frame of 4", "a frame a sample short gave \"" + what + "\"");
++        expect(sent.size() == 5, std::to_string(sent.size()) + " frames went out, not the 5 before the short one");
++    }
++}
++
++}  // namespace
++
++int main() {
++    check_reading();
++    std::printf("battle lines: a whole line read, each refusal naming its input\n");
++    check_failures();
++    std::printf("failures: a speaker's error keeps its code and names the speaker, and max_seconds as max_frames\n");
++    check_lockstep();
++    std::printf("lockstep: in frame t each speaker hears the other's frame t - 1, speaker 0's frame sent before speaker 1's\n");
++    check_stops();
++    std::printf("stops: after max_frames, at a hang_up and at a cancel before a frame; a frame of another length refused\n");
++    if (failures > 0) {
++        std::printf("worker-battle-check: %d failed\n", failures);
++        return 1;
++    }
++    std::printf("worker-battle-check: passed\n");
++    return 0;
++}
+diff --git a/checks/worker/worker-inbox-check.cpp b/checks/worker/worker-inbox-check.cpp
+new file mode 100644
+index 0000000..41de544
+--- /dev/null
++++ b/checks/worker/worker-inbox-check.cpp
+@@ -0,0 +1,337 @@
++// Checks the worker's inbox on battle lines apart from any model: a battle refused on a model that is not a dialogue
++// model, under an id in flight, or with a chunk sent to it, a hang_up or a cancel read while it waits or runs, and the
++// lines dropped after its answer. The inbox is told the model's task and name and given a stdin that stays open, so that
++// each reading is told from the end of stdin. It needs no model, device or dump.
++//
++// usage: worker-inbox-check
++
++#include <chrono>
++#include <condition_variable>
++#include <cstdint>
++#include <cstdio>
++#include <cstdlib>
++#include <deque>
++#include <filesystem>
++#include <future>
++#include <istream>
++#include <mutex>
++#include <random>
++#include <streambuf>
++#include <string>
++#include <thread>
++#include <vector>
++
++#include "cancellation.h"
++#include "inbox.h"
++#include "json-reader.h"
++
++namespace {
++
++int failures = 0;
++
++void expect(bool ok, const std::string & what) {
++    if (ok) return;
++    failures++;
++    std::printf("FAILED: %s\n", what.c_str());
++}
++
++/** A stdin that gives the characters fed to it and blocks until more come or it is closed. */
++class FedBuf : public std::streambuf {
++public:
++    void feed(const std::string & text) {
++        {
++            std::lock_guard<std::mutex> lock(mutex_);
++            for (char c : text) pending_.push_back(c);
++        }
++        changed_.notify_all();
++    }
++
++    void close() {
++        {
++            std::lock_guard<std::mutex> lock(mutex_);
++            closed_ = true;
++        }
++        changed_.notify_all();
++    }
++
++protected:
++    int_type underflow() override {
++        std::unique_lock<std::mutex> lock(mutex_);
++        changed_.wait(lock, [&] { return !pending_.empty() || closed_; });
++        if (pending_.empty()) return traits_type::eof();
++        current_ = pending_.front();
++        pending_.pop_front();
++        setg(&current_, &current_, &current_ + 1);
++        return traits_type::to_int_type(current_);
++    }
++
++private:
++    std::mutex mutex_;
++    std::condition_variable changed_;
++    std::deque<char> pending_;
++    bool closed_ = false;
++    char current_ = 0;
++};
++
++/** A path for the protocol's log in the temporary folder, unique to this rig. */
++std::string log_path() {
++    std::random_device random;
++    const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
++    const std::string name = "worker-inbox-check-" + std::to_string((long long) now) + "-" + std::to_string(random()) + ".log";
++    return (std::filesystem::temp_directory_path() / name).string();
++}
++
++FILE * open_log(const std::string & path) {
++    FILE * out = std::fopen(path.c_str(), "wb");
++    if (!out) {
++        std::printf("worker-inbox-check: cannot open the log %s\n", path.c_str());
++        std::exit(1);
++    }
++    return out;
++}
++
++/** An inbox on a model of `task`, its stdin read by a thread, and what the protocol wrote, read back from a file. */
++class Rig {
++public:
++    explicit Rig(speech_task task, const std::string & name = "Fake")
++        : path_(log_path()),
++          out_(open_log(path_)),
++          protocol_(out_),
++          inbox_(protocol_, task, name, [](const Job &) { return std::string(); }),
++          in_(&buf_) {
++        reader_ = std::thread([this] { inbox_.read(in_); });
++    }
++
++    ~Rig() {
++        close();
++        if (out_) std::fclose(out_);
++        std::remove(path_.c_str());
++    }
++
++    Inbox & inbox() { return inbox_; }
++
++    /** Feeds a line and waits until the inbox has read it and every line before it. */
++    void send(const std::string & line) {
++        buf_.feed(line + "\n");
++        const std::string id = "sync" + std::to_string(++syncs_);
++        buf_.feed("{\"type\":\"sync\",\"id\":\"" + id + "\"}\n");
++        for (int i = 0; i < 5000; i++) {
++            for (const JsonValue & m : written()) {
++                const JsonValue * mid = m.member("id");
++                if (mid && mid->text == id) {
++                    // The sync's own error is not part of what a check looks at.
++                    skip_.push_back(id);
++                    return;
++                }
++            }
++            std::this_thread::sleep_for(std::chrono::milliseconds(2));
++        }
++        expect(false, "the inbox did not read " + line);
++    }
++
++    /** Every message written so far but the answers to the syncs. */
++    std::vector<JsonValue> messages() {
++        std::vector<JsonValue> out;
++        for (JsonValue & m : written()) {
++            const JsonValue * id = m.member("id");
++            bool sync = false;
++            for (const std::string & s : skip_) sync = sync || (id && id->text == s);
++            if (!sync) out.push_back(std::move(m));
++        }
++        return out;
++    }
++
++    void close() {
++        buf_.close();
++        if (reader_.joinable()) reader_.join();
++    }
++
++private:
++    std::vector<JsonValue> written() {
++        // The protocol writes through its own stream, so that reading it back never moves where it writes.
++        std::vector<JsonValue> out;
++        FILE * in = std::fopen(path_.c_str(), "rb");
++        if (!in) return out;
++        std::string line;
++        for (int c; (c = std::fgetc(in)) != EOF;) {
++            if (c != '\n') {
++                line += (char) c;
++                continue;
++            }
++            out.push_back(parse_json(line));
++            line.clear();
++        }
++        std::fclose(in);
++        return out;
++    }
++
++    std::string path_;
++    FILE * out_;
++    Protocol protocol_;
++    Inbox inbox_;
++    FedBuf buf_;
++    std::istream in_;
++    std::thread reader_;
++    int syncs_ = 0;
++    std::vector<std::string> skip_;
++};
++
++const char * const kBattle = R"("speakers":[{"speak_first":true},{"speak_first":false}],"max_frames":8)";
++
++std::string battle(const std::string & id) {
++    return R"({"type":"battle","id":")" + id + R"(",)" + kBattle + "}";
++}
++
++/**
++ * Takes the next job, which the check expects queued, giving up after 5 seconds: a battle that was refused leaves the
++ * queue empty and take() would wait for ever. Closing stdin makes take() return, so the wait ends.
++ */
++bool queued(Rig & rig, Job & job) {
++    std::future<bool> taken = std::async(std::launch::async, [&] { return rig.inbox().take(job); });
++    if (taken.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
++        rig.close();
++        taken.wait();
++        expect(false, "the battle was not queued");
++        return false;
++    }
++    if (!taken.get()) {
++        expect(false, "the battle was not queued");
++        return false;
++    }
++    return true;
++}
++
++/** The error code of an `error` message, or its type where it is another. */
++std::string kind_of(const JsonValue & m) {
++    const JsonValue * type = m.member("type");
++    return type ? type->text : "";
++}
++
++std::string option_of(const JsonValue & m) {
++    const JsonValue * error = m.member("error");
++    const JsonValue * option = error ? error->member("option") : nullptr;
++    return option && option->kind == JsonValue::Kind::String ? option->text : "";
++}
++
++bool has_id(const JsonValue & m, const std::string & id) {
++    const JsonValue * v = m.member("id");
++    return v && v->text == id;
++}
++
++void check_other_model() {
++    Rig rig(SPEECH_TASK_SYNTHESIS, "Fake-TTS");
++    rig.send(battle("b"));
++    const std::vector<JsonValue> out = rig.messages();
++    expect(out.size() == 1 && kind_of(out[0]) == "error" && option_of(out[0]) == "type" && has_id(out[0], "b"),
++           "a battle on a model that is not a dialogue model was not refused naming type, under its id");
++}
++
++void check_duplicate() {
++    Rig rig(SPEECH_TASK_DIALOGUE);
++    rig.send(battle("b"));
++    expect(rig.messages().empty(), "a battle was answered before it ran");
++    rig.send(battle("b"));
++    const std::vector<JsonValue> out = rig.messages();
++    expect(out.size() == 1 && kind_of(out[0]) == "error" && option_of(out[0]) == "id" && out[0].member("id") == nullptr,
++           "a battle under an id in flight was not refused naming id, without an id");
++}
++
++void check_hang_up() {
++    Rig rig(SPEECH_TASK_DIALOGUE);
++    rig.send(battle("b"));
++    Job job;
++    if (!queued(rig, job)) return;
++    expect(job.kind == Job::Kind::Battle && job.id == "b" && job.battle.max_frames == 8,
++           "the battle was not queued as a job with its length");
++    Cancellation cancellation;
++    expect(rig.inbox().start(job, &cancellation), "a battle that waited was not started");
++    expect(rig.inbox().asked(job) == BattleAsk::GoOn, "a battle asked for something before any line");
++    rig.send(R"({"type":"hang_up","id":"b"})");
++    expect(rig.inbox().asked(job) == BattleAsk::HangUp, "a hang_up was not read as a hang_up");
++    expect(rig.messages().empty(), "a hang_up of a running battle was answered");
++    // A second hang_up is refused, and without the battle's id, which would read as the battle's answer.
++    rig.send(R"({"type":"hang_up","id":"b"})");
++    const std::vector<JsonValue> twice = rig.messages();
++    expect(twice.size() == 1 && kind_of(twice[0]) == "error" && option_of(twice[0]) == "id" && twice[0].member("id") == nullptr,
++           "a second hang_up was not refused naming id, without an id");
++    rig.inbox().finish(job, R"({"type":"end","id":"b","frames":0})");
++}
++
++void check_hang_up_while_waiting() {
++    Rig rig(SPEECH_TASK_DIALOGUE);
++    rig.send(battle("b"));
++    rig.send(R"({"type":"hang_up","id":"b"})");
++    Job job;
++    if (!queued(rig, job)) return;
++    Cancellation cancellation;
++    expect(rig.inbox().start(job, &cancellation) && rig.inbox().asked(job) == BattleAsk::HangUp,
++           "a hang_up before the battle was taken was not asked as a hang_up");
++    rig.inbox().finish(job, R"({"type":"end","id":"b","frames":0})");
++}
++
++void check_cancel() {
++    Rig rig(SPEECH_TASK_DIALOGUE);
++    rig.send(battle("c"));
++    rig.send(R"({"type":"cancel","id":"c"})");
++    const std::vector<JsonValue> out = rig.messages();
++    expect(out.size() == 1 && kind_of(out[0]) == "cancelled" && has_id(out[0], "c"), "a cancel of a queued battle was not answered once with cancelled");
++    Job job;
++    if (!queued(rig, job)) return;
++    expect(job.id == "c", "the cancelled battle was not given");
++    Cancellation cancellation;
++    expect(!rig.inbox().start(job, &cancellation), "a cancelled battle was started");
++    rig.send(R"({"type":"chunk","id":"c","seq":0,"pcm":""})");
++    rig.send(R"({"type":"hang_up","id":"c"})");
++    expect(rig.messages().size() == 1, "the lines after a cancel were not dropped");
++
++    rig.send(battle("d"));
++    Job running;
++    if (!queued(rig, running)) return;
++    expect(running.id == "d" && rig.inbox().start(running, &cancellation), "a second battle was not started");
++    rig.send(R"({"type":"cancel","id":"d"})");
++    expect(rig.inbox().asked(running) == BattleAsk::Cancel, "a cancel of a running battle was not asked as a cancel");
++    expect(rig.messages().size() == 1, "a cancel of a running battle was answered before the battle ended");
++    rig.inbox().finish(running, R"({"type":"cancelled","id":"d"})");
++}
++
++void check_chunk_and_dropping() {
++    Rig rig(SPEECH_TASK_DIALOGUE);
++    rig.send(battle("b"));
++    rig.send(R"({"type":"chunk","id":"b","seq":0,"pcm":""})");
++    const std::vector<JsonValue> out = rig.messages();
++    expect(out.size() == 1 && kind_of(out[0]) == "error" && option_of(out[0]) == "id" && out[0].member("id") == nullptr,
++           "a chunk sent to a battle was not refused naming id, without an id");
++
++    Job job;
++    Cancellation cancellation;
++    if (!queued(rig, job)) return;
++    expect(rig.inbox().start(job, &cancellation), "the battle was not started");
++    // The battle ends of itself, before its hang_up: the lines its caller sent before it saw the end are dropped.
++    rig.inbox().finish(job, R"({"type":"end","id":"b","frames":8})");
++    rig.send(R"({"type":"chunk","id":"b","seq":1,"pcm":""})");
++    rig.send(R"({"type":"hang_up","id":"b"})");
++    expect(rig.messages().size() == 2 && kind_of(rig.messages()[1]) == "end", "the lines after a battle's end were not dropped, up to its hang_up");
++    // The dropping ended with the hang_up, so one more is refused.
++    rig.send(R"({"type":"hang_up","id":"b"})");
++    const std::vector<JsonValue> after = rig.messages();
++    expect(after.size() == 3 && kind_of(after[2]) == "error" && after[2].member("id") == nullptr, "a hang_up after the dropping ended was not refused without an id");
++}
++
++}  // namespace
++
++int main() {
++    check_other_model();
++    check_duplicate();
++    check_hang_up();
++    check_hang_up_while_waiting();
++    check_cancel();
++    check_chunk_and_dropping();
++    std::printf("inbox: a battle refused on another model and under an id in flight, a chunk refused, hang_up and cancel read\n");
++    std::printf("inbox: the lines after a battle's end dropped\n");
++    if (failures > 0) {
++        std::printf("worker-inbox-check: %d failed\n", failures);
++        return 1;
++    }
++    std::printf("worker-inbox-check: passed\n");
++    return 0;
++}
+diff --git a/docs/worker.md b/docs/worker.md
+index 6f72de4..12112b3 100644
+--- a/docs/worker.md
++++ b/docs/worker.md
+@@ -33,7 +33,7 @@ stdout, in UTF-8.
+ ## Start
+ 
+ ```
+-out {"type":"ready","protocol":4,"version":"0.11.1","defaults":{"steps":8},"model":{...model information...}}
++out {"type":"ready","protocol":4,"version":"0.11.1","features":[],"defaults":{"steps":8},"model":{...model information...}}
+ out {"type":"fatal","error":{"code":"model_file","option":null,"message":"..."}}
+ ```
+ 
+@@ -41,7 +41,9 @@ out {"type":"fatal","error":{"code":"model_file","option":null,"message":"..."}}
+ first request, and has the voices of `--add-voice`. `version` is the release, `defaults` the request options given as
+ flags with their values (`{}` without any), and `model` is the model information as JSON
+ ([c-api.md](c-api.md#model-information-as-json)), with the device, the threads and the voices added. The model
+-information keeps the model's own defaults.
++information keeps the model's own defaults. `features` lists the requests added since protocol 4 began that the worker
++serves for its model, `["battle"]` for a dialogue model and `[]` for the others, so that a caller can refuse a worker
++that lacks one.
+ 
+ `fatal` comes instead when the worker cannot start. The worker then exits with 1, or with 2 for a command line it cannot
+ run. A detection or diarization model is `unsupported`: the worker serves synthesis, recognition, enhancement and dialogue models. A request
+@@ -61,7 +63,8 @@ not raise it.
+ | `transcribe` | `id`, `sample_rate`, option members | recognition | `progress`, then one terminal message |
+ | `enhance` | `id`, `sample_rate`, option members | enhancement | `progress` and `chunk`s, then one terminal message |
+ | `dialogue` | `id`, `sample_rate`, option members | dialogue | a `chunk` for each frame, then one terminal message |
+-| `hang_up` | `id` | dialogue | none of its own; it ends conversation `id` after the audio sent |
++| `battle` | `id`, `speakers`, `max_frames` | dialogue | a `chunk` for each frame of each speaker, then one terminal message |
++| `hang_up` | `id` | dialogue | none of its own; it ends conversation `id` after the audio sent, or battle `id` after the frame under way |
+ | `add_voice` | `id`, `name`, `path` | models that take voice files | one terminal message |
+ | `info` | `id` | any | one terminal message, at once |
+ | `count_tokens` | `id`, `text` | synthesis | one terminal message, at once |
+@@ -79,6 +82,14 @@ not raise it.
+   holds the worker until it ends, and the requests after it wait. The worker keeps no time: it sends a frame as soon as
+   it has computed it, and a caller that plays the frames as they come and sends the microphone's audio as it comes sees
+   whether the model keeps up.
++- A battle is its `battle` line alone: two conversations of the model that hear each other in place of the caller.
++  `speakers` is an array of two objects, each with the option members of a `dialogue` line but `max_seconds`, and
++  `max_frames` a whole number from 1, the most frames each speaker gives, which sets each conversation's `max_seconds`
++  to their length. When its turn comes both conversations start, each sending its first frame, and in each frame after
++  that each hears the other's frame before it, at the model's `sample_rate`. A battle takes no audio and no chunks,
++  keeps no time, and ends after `max_frames` frames, or at its `hang_up` or when stdin closes after the frame under way;
++  like a conversation it holds the worker until it ends. A `hang_up` before the battle's first frame ends it with `end`
++  and `frames` 0.
+ - `pcm`, in both directions, is base64 of 16-bit little-endian mono samples. Audio from the worker is at the model's
+   `sample_rate`, or for an enhancement at the rate it was enhanced at, the request's `sample_rate` or its `bwe`, each
+   sample `round(clamp(x, −1, 1) × 32767)`. Audio to the worker is read as `x / 32768`.
+@@ -88,7 +99,7 @@ not raise it.
+ - `count_tokens` counts a text's tokens as a synthesis counts them against `max_text_tokens`, so that a caller can split a
+   long text before it sends it, also while a synthesis runs.
+ - `cancel` of a request that is collecting chunks or waiting ends it with `cancelled` at once. A running request stops at
+-  the next point where its work can stop and ends with `cancelled`, a conversation at its next frame; `add_voice` cannot
++  the next point where its work can stop and ends with `cancelled`, a conversation at its next frame and a battle before its next one; `add_voice` cannot
+   be stopped once it runs. A cancel of an id that no request in flight has is ignored.
+ - Once a request has had its `error` or `cancelled` while it collected chunks, its later `chunk` lines are dropped up to
+   and including its `transcribe` or `enhance` line, which frees its id, or until a chunk 0 under its id starts a new
+@@ -98,18 +109,20 @@ not raise it.
+ 
+ When stdin closes, the worker answers the requests it has, answers each request still collecting chunks with an `error`,
+ since no `transcribe` or `enhance` can follow, ends each conversation once it has heard the audio sent, as its `hang_up`
+-does, and exits with 0.
++does, ends a running battle after the frame under way, and exits with 0.
+ 
+ ## Answers
+ 
+ ```
+ out {"type":"chunk","id":"a","seq":0,"pcm":"..."}
+ out {"type":"chunk","id":"d","seq":12,"pcm":"...","text":"そう"}
++out {"type":"chunk","id":"b","seq":12,"speaker":1,"pcm":"...","text":" no"}
+ out {"type":"progress","id":"r","done":0.42}
+ out {"type":"end","id":"a","seed":1234,"samples":96000,"stop":"complete"}
+ out {"type":"end","id":"r","text":"...","stop":"complete","segments":[{"start":0.0,"end":2.48,"text":"..."}],"tokens":[{"start":0.0,"end":0.16,"text":"..."}]}
+ out {"type":"end","id":"q","text":"...","stop":"complete","languages":["ja"]}
+ out {"type":"end","id":"d","frames":151,"samples":483200}
++out {"type":"end","id":"b","frames":4500}
+ out {"type":"end","id":"v"}
+ out {"type":"end","id":"i","defaults":{"steps":8},"model":{...model information...}}
+ out {"type":"end","id":"c","tokens":14}
+@@ -131,6 +144,12 @@ out {"type":"cancelled","id":"a"}
+   `sample_rate`, with `text`, what the model began to say in the frame: often empty, a space where it fell silent. Its
+   `end` has `frames` and `samples`, the numbers it sent. One that reaches its `max_seconds` ends with an `error`,
+   `out_of_range` naming `max_seconds`.
++- A battle sends a `chunk` for each frame of each speaker, speaker 0's and then speaker 1's, with `speaker`, the
++  speaker's index in `speakers`, `seq`, the frame's number from 0, which the two share, and `text` as a conversation's.
++  Its `end` has `frames`, the number each speaker sent. An error of a speaker's conversation keeps the library's code
++  and names the speaker in its message, and its option `max_seconds` is `max_frames`, which sets it: two conversations
++  that do not fit on the device end with `out_of_memory` naming `max_frames`, and a `max_frames` past the longest
++  conversation of the model with `out_of_range` naming it.
+ - `end` of `info` has `model`, `end` of `count_tokens` has `tokens`, and `end` of `add_voice` has nothing more.
+ - `error` has `code` (an error category, [c-api.md](c-api.md#errors)), `option` (the input it concerns: an option's
+   name, `text`, `audio`, `id`, `type`, `seq`, `pcm`, `name`, `path`, `sample_rate` or another member's name, or null)
+@@ -141,9 +160,9 @@ out {"type":"cancelled","id":"a"}
+   with reazonspeech-nemo-v2 in F16 on an Apple M5).
+ - A line that names no request it could belong to (not a JSON object, no string `id`, a `cancel` or a `hang_up` with a
+   member it does not have, a line that starts a request under an `id` already in flight, or a `chunk` or a `hang_up`
+-  for no conversation in flight) gets an `error` without `id`.
++  for no conversation in flight, or a `chunk` for a battle) gets an `error` without `id`.
+ - A request of another task is `unsupported` with the option `type`: a `synthesize` to a model of another task, a `chunk`
+-  to a synthesis model, whose later lines are dropped, a `transcribe`, an `enhance` or a `dialogue` to a model of another
++  to a synthesis model, whose later lines are dropped, a `transcribe`, an `enhance`, a `dialogue` or a `battle` to a model of another
+   task, and a `hang_up` to a model of another task, without `id`. A member the type does not have is
+   `invalid_argument` with that member as `option`. Option values are checked by the library's setters when the request
+   runs, so their errors are the C API's.
+@@ -161,7 +180,8 @@ out {"type":"cancelled","id":"a"}
+ - **Qwen3-ASR** recognizes up to 1200 s at once, and longer audio in parts. A cancel takes effect within a fraction of a
+   second.
+ - **Haru** hears and gives frames of 3,200 samples at 24 kHz, 133 ms. Its start runs the character card and the voice as
+-  a prompt before the first frame. A cancel takes effect at the next frame.
++  a prompt before the first frame. A cancel takes effect at the next frame, and in a battle before the next frame of the
++  two speakers.
+ - **RE-USE** enhances a request's audio in chunks of `chunk_size_in_seconds` (5 s) that start every
+   `hop_length_portion` of a chunk (0.5), and sends each part of it once the chunk after it is done, the rest after the
+   last chunk. A cancel takes effect at the next chunk.
+diff --git a/tools/worker/battle.cpp b/tools/worker/battle.cpp
+new file mode 100644
+index 0000000..581a7d5
+--- /dev/null
++++ b/tools/worker/battle.cpp
+@@ -0,0 +1,112 @@
++#include "battle.h"
++
++#include <climits>
++#include <stdexcept>
++#include <utility>
++
++namespace {
++
++/** Reads speaker `index`'s object of option members into `out`; false with the input at fault and why. */
++bool read_speaker(const JsonValue & speaker, size_t index, std::vector<RequestOption> & out, std::string & option, std::string & problem) {
++    const std::string who = "speaker " + std::to_string(index);
++    if (speaker.kind != JsonValue::Kind::Object) {
++        option = "speakers";
++        problem = who + " is " + json_excerpt(speaker) + "; give each speaker as an object of the options of a dialogue";
++        return false;
++    }
++    for (const auto & [name, value] : speaker.members) {
++        // A member set to null counts as left out, as in a line.
++        if (value.kind == JsonValue::Kind::Null) continue;
++        option = name;
++        speech_option o;
++        if (!option_named(name, o)) {
++            problem = who + " has no member \"" + name + "\"; a speaker's members are the options " + option_names();
++            return false;
++        }
++        if (o == SPEECH_OPT_MAX_SECONDS) {
++            problem = who + " sets max_seconds, which the battle's max_frames sets for both speakers; leave it out";
++            return false;
++        }
++        try {
++            out.push_back({o, option_from_json(o, value)});
++        } catch (const std::invalid_argument & e) {
++            problem = who + ": " + e.what();
++            return false;
++        }
++    }
++    return true;
++}
++
++}  // namespace
++
++bool read_battle(const JsonValue & message, Battle & out, std::string & option, std::string & problem) {
++    for (const auto & member : message.members) {
++        const std::string & name = member.first;
++        if (name == "type" || name == "id" || name == "speakers" || name == "max_frames") continue;
++        option = name;
++        problem = "battle has no member \"" + name +
++                  "\"; its members are type, id, speakers and max_frames, and a speaker's options, its seed among them, go into its object";
++        return false;
++    }
++    option = "speakers";
++    const JsonValue * speakers = message.member("speakers");
++    if (!speakers) {
++        problem = "the battle has no \"speakers\", an array of the two speakers' options";
++        return false;
++    }
++    if (speakers->kind != JsonValue::Kind::Array || speakers->items.size() != 2) {
++        problem = "\"speakers\" is " + json_excerpt(*speakers) + "; give an array of two objects, each the options of a dialogue";
++        return false;
++    }
++    for (size_t i = 0; i < 2; i++) {
++        if (!read_speaker(speakers->items[i], i, out.speakers[i], option, problem)) return false;
++    }
++    option = "max_frames";
++    const JsonValue * frames = message.member("max_frames");
++    if (!frames) {
++        problem = "the battle has no \"max_frames\", the most frames each speaker gives";
++        return false;
++    }
++    if (frames->is_integer() && frames->text.size() <= 12) {
++        const long long n = std::stoll(frames->text);
++        if (n >= 1 && n <= INT_MAX) {
++            out.max_frames = n;
++            return true;
++        }
++    }
++    problem = "\"max_frames\" is " + json_excerpt(*frames) + "; give the most frames each speaker gives as a whole number from 1";
++    return false;
++}
++
++Failure speaker_failure(int index, const Failure & failure) {
++    const std::string option = failure.option() == "max_seconds" ? "max_frames" : failure.option();
++    return Failure(failure.code(), option, "speaker " + std::to_string(index) + ": " + failure.what());
++}
++
++BattleEnd run_battle(BattleSpeaker & first, BattleSpeaker & second, int64_t max_frames, int64_t frame_samples,
++                     const std::function<BattleAsk()> & ask, const std::function<void(int, int64_t, const BattleFrame &)> & sink) {
++    BattleSpeaker * speakers[2] = {&first, &second};
++    std::vector<float> before[2];
++    BattleEnd end;
++    for (int64_t t = 0; t < max_frames; t++) {
++        const BattleAsk asked = ask();
++        if (asked != BattleAsk::GoOn) {
++            end.stop = asked == BattleAsk::Cancel ? BattleStop::Cancel : BattleStop::HangUp;
++            return end;
++        }
++        BattleFrame out[2];
++        for (int i = 0; i < 2; i++) {
++            out[i] = t == 0 ? speakers[i]->start() : speakers[i]->step(before[1 - i]);
++            if ((int64_t) out[i].audio.size() != frame_samples) {
++                throw std::runtime_error("frame " + std::to_string(t) + " of speaker " + std::to_string(i) + " is " +
++                                         std::to_string(out[i].audio.size()) + " samples, not a frame of " + std::to_string(frame_samples));
++            }
++            sink(i, t, out[i]);
++        }
++        // Both speakers of frame t heard the frames of t - 1, so the frames of t become what each hears next only now.
++        for (int i = 0; i < 2; i++) before[i] = std::move(out[i].audio);
++        end.frames = t + 1;
++    }
++    end.stop = BattleStop::MaxFrames;
++    return end;
++}
+diff --git a/tools/worker/battle.h b/tools/worker/battle.h
+new file mode 100644
+index 0000000..77916f6
+--- /dev/null
++++ b/tools/worker/battle.h
+@@ -0,0 +1,71 @@
++#pragma once
++
++#include <cstdint>
++#include <functional>
++#include <string>
++#include <vector>
++
++#include "failure.h"
++#include "json-reader.h"
++#include "request-options.h"
++
++// A battle of the worker: two conversations of one dialogue model that hear each other in place of a caller, stepped in
++// lockstep a frame at a time. Reading its line and stepping it know nothing of the library's conversations, so that a
++// check runs both on fake speakers.
++
++/** What a battle line asks: the options of its two speakers, each as a dialogue line's option members, and its length. */
++struct Battle {
++    std::vector<RequestOption> speakers[2];
++    /** The most frames each speaker gives, which also sets each conversation's max_seconds. */
++    int64_t max_frames = 0;
++};
++
++/**
++ * Reads the members of a battle line, whose type and id the caller has read: `speakers`, an array of two objects whose
++ * members are options of the vocabulary, as a dialogue line's are, but max_seconds, which max_frames sets, a member set
++ * to null counting as left out; and `max_frames`, a whole number from 1 to INT_MAX. Any other member is refused, a seed
++ * beside the speakers among them. Returns false with the input at fault, a member or a speaker's option, and why.
++ */
++bool read_battle(const JsonValue & message, Battle & out, std::string & option, std::string & problem);
++
++/**
++ * The failure of speaker `index`'s conversation as the battle reports it: the library's code, the speaker named at the
++ * start of the message, and the option max_seconds, which the battle sets from max_frames, named max_frames.
++ */
++Failure speaker_failure(int index, const Failure & failure);
++
++/** A frame a speaker gives: its samples at the model's rate and the text it began in them. */
++struct BattleFrame {
++    std::vector<float> audio;
++    std::string text;
++};
++
++/** A speaker of a battle: start() gives its first frame, step() hears a frame of the other's and gives its next. */
++class BattleSpeaker {
++public:
++    virtual ~BattleSpeaker() = default;
++    virtual BattleFrame start() = 0;
++    virtual BattleFrame step(const std::vector<float> & heard) = 0;
++};
++
++/** What the caller has asked of a running battle, read before each frame: nothing, its hang_up, or its cancel. */
++enum class BattleAsk { GoOn, HangUp, Cancel };
++
++/** Why a battle ended: its max_frames, its hang_up (or the end of stdin), or its cancel. */
++enum class BattleStop { MaxFrames, HangUp, Cancel };
++
++/** How a battle ended: the frames each speaker gave, and why. */
++struct BattleEnd {
++    int64_t frames = 0;
++    BattleStop stop = BattleStop::MaxFrames;
++};
++
++/**
++ * Runs up to `max_frames` frames of a battle. Frame 0 is each speaker's start(); in frame t each speaker's step() hears
++ * the other's frame t - 1, a_t = A.step(b_{t-1}) and b_t = B.step(a_{t-1}), so that each hears the other one frame late,
++ * as a conversation hears its caller. `ask` is read before each frame, and a hang_up or a cancel ends the battle there,
++ * after whole frames. `sink` gets each frame as it comes with its speaker and number, speaker 0's before speaker 1's. A
++ * frame that is not `frame_samples` long throws std::runtime_error.
++ */
++BattleEnd run_battle(BattleSpeaker & first, BattleSpeaker & second, int64_t max_frames, int64_t frame_samples,
++                     const std::function<BattleAsk()> & ask, const std::function<void(int, int64_t, const BattleFrame &)> & sink);
+diff --git a/tools/worker/inbox.cpp b/tools/worker/inbox.cpp
+index af1faba..32f5a18 100644
+--- a/tools/worker/inbox.cpp
++++ b/tools/worker/inbox.cpp
+@@ -11,7 +11,7 @@
+ 
+ namespace {
+ 
+-const char * const kTypes = "synthesize, chunk, transcribe, enhance, dialogue, hang_up, add_voice, info, count_tokens or cancel";
++const char * const kTypes = "synthesize, chunk, transcribe, enhance, dialogue, battle, hang_up, add_voice, info, count_tokens or cancel";
+ 
+ /** The requests a model of `task` takes, for a message that refuses another. */
+ std::string requests_of(speech_task task) {
+@@ -19,7 +19,7 @@ std::string requests_of(speech_task task) {
+         case SPEECH_TASK_SYNTHESIS: return "synthesize";
+         case SPEECH_TASK_RECOGNITION: return "chunk and transcribe";
+         case SPEECH_TASK_ENHANCEMENT: return "chunk and enhance";
+-        case SPEECH_TASK_DIALOGUE: return "dialogue, chunk and hang_up";
++        case SPEECH_TASK_DIALOGUE: return "dialogue, battle, chunk and hang_up";
+         default: return "none";
+     }
+ }
+@@ -123,11 +123,19 @@ Heard Inbox::hear(const Job & job) {
+     return heard;
+ }
+ 
++BattleAsk Inbox::asked(const Job & job) {
++    std::lock_guard<std::mutex> lock(mutex_);
++    const Pending & p = pending_.at(job.id);
++    if (p.running && p.running->cancelled()) return BattleAsk::Cancel;
++    if (p.hung_up || closed_) return BattleAsk::HangUp;
++    return BattleAsk::GoOn;
++}
++
+ void Inbox::finish(const Job & job, const std::string & line) {
+     std::lock_guard<std::mutex> lock(mutex_);
+     const auto it = pending_.find(job.id);
+-    // A conversation answered before its hang_up drops the chunks its caller sent before it saw the answer.
+-    if (it != pending_.end() && it->second.dialogue && !it->second.hung_up) dropping_.insert(job.id);
++    // A conversation or a battle answered before its hang_up drops the lines its caller sent before it saw the answer.
++    if (it != pending_.end() && (it->second.dialogue || it->second.battle) && !it->second.hung_up) dropping_.insert(job.id);
+     if (it != pending_.end()) pending_.erase(it);
+     protocol_.line(line);
+ }
+@@ -263,6 +271,8 @@ void Inbox::take_line(const std::string & line) {
+         end_chunks(Job::Kind::Enhance, id, message);
+     } else if (t == "dialogue") {
+         request(Job::Kind::Converse, t, id, message);
++    } else if (t == "battle") {
++        request(Job::Kind::Battle, t, id, message);
+     } else if (t == "hang_up") {
+         hang_up(id);
+     } else if (t == "synthesize") {
+@@ -288,7 +298,7 @@ void Inbox::cancel(const std::string & id) {
+         changed_.notify_all();
+         return;
+     }
+-    if (p.state == Pending::State::Collecting || (p.dialogue && !p.hung_up)) dropping_.insert(id);
++    if (p.state == Pending::State::Collecting || ((p.dialogue || p.battle) && !p.hung_up)) dropping_.insert(id);
+     pending_.erase(it);
+     protocol_.line("{\"type\":\"cancelled\",\"id\":" + json_string(id) + "}");
+ }
+@@ -306,10 +316,10 @@ void Inbox::request(Job::Kind kind, const std::string & type, const std::string
+                         "; synthesize needs a synthesis model");
+         return;
+     }
+-    if (kind == Job::Kind::Converse && task_ != SPEECH_TASK_DIALOGUE) {
++    if ((kind == Job::Kind::Converse || kind == Job::Kind::Battle) && task_ != SPEECH_TASK_DIALOGUE) {
+         reply_error(&id, speech_status_name(SPEECH_ERROR_UNSUPPORTED), "type",
+-                    model_name_ + " is a model of speech " + task_name(task_) + ", which takes " + requests_of(task_) +
+-                        "; dialogue needs a dialogue model");
++                    model_name_ + " is a model of speech " + task_name(task_) + ", which takes " + requests_of(task_) + "; " + type +
++                        " needs a dialogue model");
+         return;
+     }
+     Job job;
+@@ -331,6 +341,20 @@ void Inbox::request(Job::Kind kind, const std::string & type, const std::string
+         queue(std::move(job));
+         return;
+     }
++    if (kind == Job::Kind::Battle) {
++        std::string option, problem;
++        if (!read_battle(message, job.battle, option, problem)) {
++            reply_error(&id, invalid, option, problem);
++            return;
++        }
++        // A new battle under the id of one answered before its hang_up ends the dropping of that one's lines.
++        dropping_.erase(id);
++        Pending & p = open(id, Pending::State::Waiting);
++        p.battle = true;
++        job.serial = p.serial;
++        queue(std::move(job));
++        return;
++    }
+     std::vector<std::string> members = {"type", "id"};
+     if (kind == Job::Kind::Synthesize || kind == Job::Kind::CountTokens) members.push_back("text");
+     if (kind == Job::Kind::AddVoice) members.insert(members.end(), {"name", "path"});
+@@ -393,6 +417,11 @@ void Inbox::dialogue_chunk(const std::string & id, const JsonValue & message) {
+     if (dropping_.count(id)) return;
+     const std::string invalid = speech_status_name(SPEECH_ERROR_INVALID_ARGUMENT);
+     const auto it = pending_.find(id);
++    if (it != pending_.end() && it->second.battle) {
++        reply_error(nullptr, invalid, "id",
++                    "the battle " + json_string(id) + " takes no chunks, as its speakers hear each other; send chunks to a conversation");
++        return;
++    }
+     if (it == pending_.end() || !it->second.dialogue) {
+         reply_error(nullptr, invalid, "id",
+                     "no conversation under the id " + json_string(id) + " is in flight; start one with a dialogue line before its chunks");
+@@ -418,7 +447,7 @@ void Inbox::hang_up(const std::string & id) {
+         return;
+     }
+     const auto it = pending_.find(id);
+-    if (it != pending_.end() && it->second.dialogue && !it->second.hung_up) {
++    if (it != pending_.end() && (it->second.dialogue || it->second.battle) && !it->second.hung_up) {
+         it->second.hung_up = true;
+         dropping_.erase(id);
+         changed_.notify_all();
+@@ -426,7 +455,7 @@ void Inbox::hang_up(const std::string & id) {
+     }
+     if (dropping_.erase(id)) return;
+     reply_error(nullptr, speech_status_name(SPEECH_ERROR_INVALID_ARGUMENT), "id",
+-                "no conversation under the id " + json_string(id) + " is in flight before its hang_up; hang up a conversation once");
++                "no conversation or battle under the id " + json_string(id) + " is in flight before its hang_up; hang up a conversation or battle once");
+ }
+ 
+ bool Inbox::read_chunk(const JsonValue & message, Pending & p, std::string & option, std::string & problem) const {
+diff --git a/tools/worker/inbox.h b/tools/worker/inbox.h
+index 126b81a..244911c 100644
+--- a/tools/worker/inbox.h
++++ b/tools/worker/inbox.h
+@@ -14,6 +14,7 @@
+ #include <utility>
+ #include <vector>
+ 
++#include "battle.h"
+ #include "cancellation.h"
+ #include "failure.h"
+ #include "request-options.h"
+@@ -21,8 +22,9 @@
+ 
+ // The worker's side of reading its protocol: each line on stdin checked as a message of its type, the requests in
+ // flight until their terminal message, the audio of a recognition or enhancement request gathered from its chunks, the
+-// audio of a conversation passed to it from its chunks while it runs, cancels, and the queue of what runs in turn. Every answer the reading gives, and every terminal message, goes out with the inbox
+-// locked, so that a request's state and what the caller has been told never differ.
++// audio of a conversation passed to it from its chunks while it runs, the hang_up and cancel of a running battle,
++// cancels, and the queue of what runs in turn. Every answer the reading gives, and every terminal message, goes out
++// with the inbox locked, so that a request's state and what the caller has been told never differ.
+ 
+ /** Writes the worker's lines on its stdout, whole, one at a time. */
+ class Protocol {
+@@ -40,7 +42,7 @@ std::string error_object(const std::string & code, const std::string & option, c
+ 
+ /** What the worker runs in turn, or for info and count_tokens answers at once. */
+ struct Job {
+-    enum class Kind { Synthesize, Transcribe, Enhance, Converse, AddVoice, Info, CountTokens };
++    enum class Kind { Synthesize, Transcribe, Enhance, Converse, Battle, AddVoice, Info, CountTokens };
+     Kind kind = Kind::Info;
+     std::string id;
+     /** The serial of the request the job belongs to, which tells it from a later request under the same id. */
+@@ -53,6 +55,8 @@ struct Job {
+     /** The audio of transcribe and enhance: 16-bit samples at `sample_rate`, which is also the rate of a conversation's. */
+     std::vector<int16_t> pcm;
+     int sample_rate = 0;
++    /** The speakers and length of a battle. */
++    Battle battle;
+ };
+ 
+ /** What a running conversation has heard since it last asked. */
+@@ -93,6 +97,12 @@ public:
+      */
+     Heard hear(const Job & job);
+ 
++    /**
++     * What the caller has asked of the running battle of `job`, without waiting: a cancel, or a hang_up or the end of
++     * stdin, which ends a battle as its hang_up does, or nothing.
++     */
++    BattleAsk asked(const Job & job);
++
+     /** Sends the request's terminal message and forgets the request. */
+     void finish(const Job & job, const std::string & line);
+ 
+@@ -111,6 +121,8 @@ private:
+         Cancellation * running = nullptr;
+         /** A conversation, which takes chunks while it waits and while it runs, up to its hang_up. */
+         bool dialogue = false;
++        /** A battle, which takes no chunks and runs up to its max_frames, its hang_up or a cancel. */
++        bool battle = false;
+         bool hung_up = false;
+         std::optional<std::pair<std::string, std::string>> refused;
+     };
+@@ -127,8 +139,8 @@ private:
+     /**
+      * The ids of requests answered while they collected chunks, by an error or a cancel: their later chunk lines are
+      * dropped up to and including their transcribe or enhance line, which frees the id, or a chunk 0, which starts a
+-     * new request under it; and of conversations answered before their hang_up, whose later chunk lines are dropped up
+-     * to and including their hang_up, or until a dialogue line starts a new one under the id.
++     * new request under it; and of conversations and battles answered before their hang_up, whose later lines are
++     * dropped up to and including their hang_up, or until a dialogue or battle line starts a new one under the id.
+      */
+     std::set<std::string> dropping_;
+     uint64_t serial_ = 0;
+diff --git a/tools/worker/worker.cpp b/tools/worker/worker.cpp
+index cf4f34c..0e87007 100644
+--- a/tools/worker/worker.cpp
++++ b/tools/worker/worker.cpp
+@@ -1,5 +1,6 @@
+ #include <algorithm>
+ #include <chrono>
++#include <climits>
+ #include <cmath>
+ #include <cstdio>
+ #include <iostream>
+@@ -10,6 +11,7 @@
+ #include <vector>
+ 
+ #include "base64.h"
++#include "battle.h"
+ #include "cancellation.h"
+ #include "commands.h"
+ #include "enhancement.h"
+@@ -24,7 +26,8 @@
+ // cannot; then it runs the requests one at a time in the order they become complete, but for info and count_tokens,
+ // which it answers as they arrive, each answered by exactly one terminal message, `end`, `error` or `cancelled`, and
+ // exits with 0 once stdin closes and every request is answered. A conversation runs from its dialogue line to its
+-// hang_up, hearing its chunks as they arrive and sending a chunk for each frame the model gives.
++// hang_up, hearing its chunks as they arrive and sending a chunk for each frame the model gives; a battle, two
++// conversations of the model that hear each other, runs from its battle line to its max_frames, hang_up or cancel.
+ 
+ namespace {
+ 
+@@ -226,6 +229,111 @@ void converse(Inbox & inbox, Protocol & protocol, speech_model * model, const Jo
+     inbox.finish(job, terminal);
+ }
+ 
++/**
++ * A speaker of a battle as a conversation of the model, started at the model's own rate, so that the other's frame is one
++ * frame it hears as it is, without resampling. An error of its conversation is reported as speaker_failure() gives it.
++ */
++class DialogueSpeaker : public BattleSpeaker {
++public:
++    DialogueSpeaker(speech_model * model, int index, std::vector<RequestOption> options, int sample_rate)
++        : model_(model), index_(index), options_(std::move(options)), sample_rate_(sample_rate) {}
++
++    BattleFrame start() override {
++        try {
++            const Request request = new_request(model_);
++            apply_options(request.get(), options_);
++            speech_dialogue * raw = nullptr;
++            const speech_status s = speech_dialogue_start(request.get(), sample_rate_, on_frame, this, &raw);
++            dialogue_.reset(raw);
++            check(s);
++        } catch (const Failure & f) {
++            throw speaker_failure(index_, f);
++        }
++        return take();
++    }
++
++    BattleFrame step(const std::vector<float> & heard) override {
++        try {
++            check(speech_dialogue_push(dialogue_.get(), heard.data(), heard.size()));
++        } catch (const Failure & f) {
++            throw speaker_failure(index_, f);
++        }
++        return take();
++    }
++
++private:
++    static int on_frame(const float * s, size_t n, const char * text, void * user_data) {
++        DialogueSpeaker & self = *static_cast<DialogueSpeaker *>(user_data);
++        self.given_.push_back({std::vector<float>(s, s + n), text ? text : ""});
++        return 0;
++    }
++
++    /** The one frame the last call gave: a whole frame heard at the model's rate gives exactly one. */
++    BattleFrame take() {
++        if (given_.size() != 1) {
++            throw std::logic_error("a call into speaker " + std::to_string(index_) + "'s conversation gave " + std::to_string(given_.size()) +
++                                   " frames where the battle takes exactly one");
++        }
++        BattleFrame f = std::move(given_.front());
++        given_.clear();
++        return f;
++    }
++
++    speech_model * model_;
++    int index_;
++    std::vector<RequestOption> options_;
++    int sample_rate_;
++    std::unique_ptr<speech_dialogue, decltype(&speech_dialogue_free)> dialogue_{nullptr, speech_dialogue_free};
++    std::vector<BattleFrame> given_;
++};
++
++/**
++ * Holds the job's battle: its two speakers stepped in lockstep as fast as the device computes, a chunk with the speaker's
++ * index for each frame of each, until max_frames, its hang_up, a cancel or the end of stdin ends it after whole frames.
++ * Each conversation's max_seconds is the length of max_frames frames, so that it holds the keys and values of the battle
++ * and no more: 0.3 GB each for 10 minutes of Haru-4B, where the default hour holds 1.7 GB.
++ */
++void hold_battle(Inbox & inbox, Protocol & protocol, speech_model * model, const speech_model_info * info, const Job & job) {
++    Cancellation cancellation;
++    if (!inbox.start(job, &cancellation)) return;
++    std::string terminal;
++    try {
++        const int rate = speech_model_info_sample_rate(info);
++        const int64_t frame = speech_model_info_frame_samples(info);
++        double minimum = 0, maximum = 0;
++        int exclusive = 0;
++        check(speech_model_info_option_range(info, SPEECH_OPT_MAX_SECONDS, &minimum, &maximum, &exclusive));
++        const int64_t most = std::isfinite(maximum) ? (int64_t) std::floor(maximum * rate / (double) frame + 1e-9) : (int64_t) INT_MAX;
++        if (job.battle.max_frames > most) {
++            throw Failure(speech_status_name(SPEECH_ERROR_OUT_OF_RANGE), "max_frames",
++                          "max_frames is " + std::to_string(job.battle.max_frames) + ", more than the " + std::to_string(most) + " frames of " +
++                              json_number(maximum) + " s that a conversation of " + speech_model_info_name(info) + " holds; give at most " +
++                              std::to_string(most));
++        }
++        const double seconds = (double) job.battle.max_frames * (double) frame / rate;
++        std::vector<std::unique_ptr<DialogueSpeaker>> speakers;
++        for (int i = 0; i < 2; i++) {
++            std::vector<RequestOption> options = job.battle.speakers[i];
++            options.push_back({SPEECH_OPT_MAX_SECONDS, seconds});
++            speakers.push_back(std::make_unique<DialogueSpeaker>(model, i, std::move(options), rate));
++        }
++        std::vector<int16_t> pcm;
++        const BattleEnd end = run_battle(
++            *speakers[0], *speakers[1], job.battle.max_frames, frame, [&] { return inbox.asked(job); },
++            [&](int speaker, int64_t seq, const BattleFrame & f) {
++                protocol.line("{\"type\":\"chunk\",\"id\":" + json_string(job.id) + ",\"seq\":" + std::to_string(seq) + ",\"speaker\":" +
++                              std::to_string(speaker) + ",\"pcm\":\"" + pcm_base64(f.audio.data(), f.audio.size(), pcm) + "\",\"text\":" +
++                              json_string(f.text) + "}");
++            });
++        terminal = end.stop == BattleStop::Cancel
++                       ? cancelled_line(job.id)
++                       : "{\"type\":\"end\",\"id\":" + json_string(job.id) + ",\"frames\":" + std::to_string(end.frames) + "}";
++    } catch (const std::exception & e) {
++        terminal = error_line(job.id, e);
++    }
++    inbox.finish(job, terminal);
++}
++
+ /** Runs add_voice, which a cancel no longer stops once it runs. */
+ void add_voice(Inbox & inbox, speech_model * model, const Job & job) {
+     if (!inbox.start(job, nullptr)) return;
+@@ -286,8 +394,11 @@ int run_worker(const CommandLine & line, FILE * out) {
+     }
+     const std::vector<RequestOption> defaults = defaults_for(model.get(), line.options);
+     const std::string defaults_json = options_json(defaults);
++    // The requests added since protocol 4 began that the worker serves for the model, by which a caller tells this worker
++    // from an older one without the protocol rising.
++    const std::string features = speech_model_info_task(m) == SPEECH_TASK_DIALOGUE ? "[\"battle\"]" : "[]";
+     protocol.line("{\"type\":\"ready\",\"protocol\":" + std::to_string(kProtocol) + ",\"version\":" + json_string(speech_version()) +
+-                  ",\"defaults\":" + defaults_json + ",\"model\":" + speech_model_info_json(m) + "}");
++                  ",\"features\":" + features + ",\"defaults\":" + defaults_json + ",\"model\":" + speech_model_info_json(m) + "}");
+     std::fprintf(stderr, "speech worker: %s on %s, ready\n", speech_model_info_name(m), speech_model_info_device(m));
+     if (!defaults.empty()) std::fprintf(stderr, "speech worker: by default %s\n", options_text(defaults).c_str());
+ 
+@@ -298,12 +409,17 @@ int run_worker(const CommandLine & line, FILE * out) {
+     reader.detach();
+     for (Job job; inbox.take(job);) {
+         job.options = with_defaults(defaults, job.options);
++        for (std::vector<RequestOption> & speaker : job.battle.speakers) speaker = with_defaults(defaults, speaker);
+         switch (job.kind) {
+             case Job::Kind::Synthesize: synthesize(inbox, protocol, model.get(), job); break;
+             case Job::Kind::Transcribe: recognize(inbox, protocol, model.get(), m, job); break;
+             case Job::Kind::Enhance: enhance(inbox, protocol, model.get(), job); break;
+             case Job::Kind::Converse: converse(inbox, protocol, model.get(), job); break;
+-            default: add_voice(inbox, model.get(), job); break;
++            case Job::Kind::Battle: hold_battle(inbox, protocol, model.get(), m, job); break;
++            case Job::Kind::AddVoice: add_voice(inbox, model.get(), job); break;
++            // An info and a count_tokens are answered at once and never queued.
++            case Job::Kind::Info:
++            case Job::Kind::CountTokens: break;
+         }
+     }
+     inbox.close_collecting();
