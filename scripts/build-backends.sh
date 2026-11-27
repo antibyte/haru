@@ -27,17 +27,24 @@ JOBS="$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
 
 git submodule update --init --recursive extern/speech.cpp
 
-# Apply patches/ggml to the pinned ggml submodule; a patch already applied is skipped.
+# Apply patches/ggml to the pinned ggml submodule, then patches/speech.cpp to speech.cpp itself. The two sets touch
+# different repositories, so their order matters for the log only; ggml goes first as the layer speech.cpp builds on.
+# A patch already applied is skipped; one that neither applies nor is applied stops the build.
+apply_patches() {
+  local name="$1" folder="$2" repo="$3" patch
+  for patch in "$ROOT/$folder"/*.patch; do
+    if git -C "$repo" apply --reverse --check "$patch" >/dev/null 2>&1; then
+      echo "$name patch already applied: $(basename "$patch")"
+    else
+      git -C "$repo" apply --check "$patch" || { echo "$name patch neither applies nor is applied: $patch" >&2; exit 1; }
+      git -C "$repo" apply "$patch"
+      echo "$name patch applied: $(basename "$patch")"
+    fi
+  done
+}
 shopt -s nullglob
-for patch in "$ROOT"/patches/ggml/*.patch; do
-  if git -C extern/speech.cpp/ggml apply --reverse --check "$patch" >/dev/null 2>&1; then
-    echo "ggml patch already applied: $(basename "$patch")"
-  else
-    git -C extern/speech.cpp/ggml apply --check "$patch"       || { echo "ggml patch neither applies nor is applied: $patch" >&2; exit 1; }
-    git -C extern/speech.cpp/ggml apply "$patch"
-    echo "ggml patch applied: $(basename "$patch")"
-  fi
-done
+apply_patches ggml patches/ggml extern/speech.cpp/ggml
+apply_patches speech.cpp patches/speech.cpp extern/speech.cpp
 shopt -u nullglob
 
 for v in "${VARIANTS[@]}"; do
@@ -62,7 +69,7 @@ for v in "${VARIANTS[@]}"; do
   esac
 
   cmake -S extern/speech.cpp -B "$build_dir" "${flags[@]}"
-  cmake --build "$build_dir" --target speech-cli -j "$JOBS"
+  cmake --build "$build_dir" --target speech-cli worker-battle-check worker-inbox-check -j "$JOBS"
 
   dest="app/src-tauri/backends/$v"
   mkdir -p "$dest"
@@ -82,4 +89,10 @@ for v in "${VARIANTS[@]}"; do
   "$dest/speech" --version
   echo "--- $dest/speech devices --json"
   "$dest/speech" devices --json
+  # The battle's reading and lockstep, and the inbox's handling of its lines, which need no model (speech.cpp's
+  # checks/worker/worker-battle-check.cpp and worker-inbox-check.cpp).
+  for check in worker-battle-check worker-inbox-check; do
+    echo "--- $build_dir/$check"
+    "$build_dir/$check"
+  done
 done

@@ -232,7 +232,7 @@ scripts\build-backends.ps1 -Variants cuda
 
 The result is in `app\src-tauri\backends\<variant>\speech.exe`. The folder is excluded via `.gitignore`.
 
-Before building, the build applies all patches from `patches/ggml/` to the ggml submodule (`extern/speech.cpp/ggml`) (`git apply`, idempotent: a patch that is already applied is skipped, one that cannot be applied aborts the build). Reason: the pinned ggml aborts with `GGML_ASSERT(wg0 <= maxComputeWorkGroupCount[0])` when RMS_NORM has more than 65535 rows (Intel GPUs, e.g. when creating a voice from a reference recording); the patch fixes this without needing its own commit in the nested submodule. The patches only change the working directory of the submodule.
+Before building, the build applies all patches from `patches/ggml/` to the ggml submodule (`extern/speech.cpp/ggml`) and then all patches from `patches/speech.cpp/` to speech.cpp itself (`extern/speech.cpp`) (`git apply`, idempotent: a patch that is already applied is skipped, one that cannot be applied aborts the build). Reason for the ggml patch: the pinned ggml aborts with `GGML_ASSERT(wg0 <= maxComputeWorkGroupCount[0])` when RMS_NORM has more than 65535 rows (Intel GPUs, e.g. when creating a voice from a reference recording); the patch fixes this without needing its own commit in the nested submodule. The speech.cpp patch adds the worker's `battle` request for the battle mode, two conversations of the loaded model that talk to each other; the build also runs its checks `worker-battle-check` and `worker-inbox-check`, which need no model. The patches only change the working directories of the submodules.
 
 ### 3. Frontend and app
 

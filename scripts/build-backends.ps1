@@ -38,19 +38,27 @@ if ('cuda' -in $Variants) {
 git submodule update --init --recursive extern/speech.cpp
 Assert-Native 'git submodule update'
 
-# Apply patches/ggml to the pinned ggml submodule; a patch already applied is skipped.
-$ggmlDir = Join-Path $Root 'extern/speech.cpp/ggml'
-foreach ($patch in Get-ChildItem (Join-Path $Root 'patches/ggml') -Filter '*.patch' -ErrorAction SilentlyContinue | Sort-Object Name) {
-  git -C $ggmlDir apply --reverse --check $patch.FullName 2>$null
-  if ($LASTEXITCODE -eq 0) {
-    Write-Host "ggml patch already applied: $($patch.Name)"
-    continue
+# Apply patches/ggml to the pinned ggml submodule, then patches/speech.cpp to speech.cpp itself. The two sets touch
+# different repositories, so their order matters for the log only; ggml goes first as the layer speech.cpp builds on.
+# A patch already applied is skipped; one that neither applies nor is applied stops the build.
+$patchSets = @(
+  @{ Name = 'ggml'; Folder = 'patches/ggml'; Repo = 'extern/speech.cpp/ggml' },
+  @{ Name = 'speech.cpp'; Folder = 'patches/speech.cpp'; Repo = 'extern/speech.cpp' }
+)
+foreach ($set in $patchSets) {
+  $repoDir = Join-Path $Root $set.Repo
+  foreach ($patch in Get-ChildItem (Join-Path $Root $set.Folder) -Filter '*.patch' -ErrorAction SilentlyContinue | Sort-Object Name) {
+    git -C $repoDir apply --reverse --check $patch.FullName 2>$null
+    if ($LASTEXITCODE -eq 0) {
+      Write-Host "$($set.Name) patch already applied: $($patch.Name)"
+      continue
+    }
+    git -C $repoDir apply --check $patch.FullName
+    Assert-Native "$($set.Name) patch $($patch.Name) neither applies nor is applied"
+    git -C $repoDir apply $patch.FullName
+    Assert-Native "git apply $($patch.Name)"
+    Write-Host "$($set.Name) patch applied: $($patch.Name)"
   }
-  git -C $ggmlDir apply --check $patch.FullName
-  Assert-Native "ggml patch $($patch.Name) neither applies nor is applied"
-  git -C $ggmlDir apply $patch.FullName
-  Assert-Native "git apply $($patch.Name)"
-  Write-Host "ggml patch applied: $($patch.Name)"
 }
 
 foreach ($v in $Variants) {
@@ -74,7 +82,7 @@ foreach ($v in $Variants) {
   cmake @cfg
   Assert-Native "cmake configure ($v)"
 
-  cmake --build $buildDir --config $Config --target speech-cli -j
+  cmake --build $buildDir --config $Config --target speech-cli worker-battle-check worker-inbox-check -j
   Assert-Native "cmake build ($v)"
 
   $src = Join-Path $buildDir "$Config/speech.exe"
@@ -129,4 +137,13 @@ foreach ($v in $Variants) {
   Write-Host "--- $exe devices --json" -ForegroundColor Cyan
   & $exe devices --json
   Assert-Native "speech devices ($v)"
+
+  # The battle's reading and lockstep, and the inbox's handling of its lines, which need no model (speech.cpp's
+  # checks/worker/worker-battle-check.cpp and worker-inbox-check.cpp).
+  foreach ($name in 'worker-battle-check', 'worker-inbox-check') {
+    $check = Join-Path $buildDir "$Config/$name.exe"
+    Write-Host "--- $check" -ForegroundColor Cyan
+    & $check
+    Assert-Native "$name ($v)"
+  }
 }

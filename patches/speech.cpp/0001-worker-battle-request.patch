@@ -10,7 +10,8 @@ max_seconds, so that the keys and values held are those of the battle alone.
 A hang_up, a cancel or the end of stdin stops it after whole frames; ready
 lists "features":["battle"] for a dialogue model. Protocol 4 is unchanged for
 every other request. Adds worker-battle-check (the reading and the lockstep on
-fake speakers, no model) and checks/smoke/worker_battle_smoke.py.
+fake speakers, no model), worker-inbox-check (the inbox on battle lines, no
+model) and checks/smoke/worker_battle_smoke.py.
 
 ---
 diff --git a/CMakeLists.txt b/CMakeLists.txt
