@@ -126,7 +126,7 @@ foreach ($v in $Variants) {
 
     $nvcuda = Join-Path $env:SystemRoot 'System32\nvcuda.dll'
     if (-not (Test-Path $nvcuda)) {
-      Write-Warning "nvcuda.dll not found ($nvcuda): no NVIDIA driver on this machine. speech.exe imports nvcuda.dll (CUDA driver API), so it cannot start here (STATUS_DLL_NOT_FOUND). Skipping 'speech --version' and 'devices --json' for the cuda variant; the build output and bundled CUDA DLLs were verified."
+      Write-Warning "nvcuda.dll not found ($nvcuda): no NVIDIA driver on this machine. speech.exe imports nvcuda.dll (CUDA driver API), so it cannot start here (STATUS_DLL_NOT_FOUND). Skipping 'speech --version', 'devices --json' and the two checks for the cuda variant; the build output and bundled CUDA DLLs were verified."
       continue
     }
   }
