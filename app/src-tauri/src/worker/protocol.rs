@@ -207,6 +207,30 @@ mod tests {
     }
 
     #[test]
+    fn reads_ready_chunk_and_end_of_a_worker_with_battle() {
+        let ready = r#"{"type":"ready","protocol":4,"version":"0.11.1","features":["battle"],"defaults":{},"model":{"name":"Haru-4B","task":"dialogue","sample_rate":24000,"frame_samples":3200,"device":"Vulkan1","weight_type":"Q8_0","options":[]}}"#;
+        match parse_line(ready).unwrap() {
+            WorkerMsg::Ready(r) => assert!(check_ready(&r).is_ok()),
+            o => panic!("{o:?}"),
+        }
+        match parse_line(r#"{"type":"chunk","id":"b","seq":7,"speaker":1,"pcm":"AAA=","text":"ja"}"#).unwrap() {
+            WorkerMsg::Chunk { id, seq, text, .. } => {
+                assert_eq!(id, "b");
+                assert_eq!(seq, 7);
+                assert_eq!(text.as_deref(), Some("ja"));
+            }
+            o => panic!("{o:?}"),
+        }
+        match parse_line(r#"{"type":"end","id":"b","frames":4500}"#).unwrap() {
+            WorkerMsg::End { frames, samples, .. } => {
+                assert_eq!(frames, Some(4500));
+                assert_eq!(samples, None);
+            }
+            o => panic!("{o:?}"),
+        }
+    }
+
+    #[test]
     fn parses_error_with_nested_error_object() {
         match parse_line(r#"{"type":"error","id":"g","error":{"code":"out_of_range","option":"max_seconds","message":"m"}}"#).unwrap() {
             WorkerMsg::Error { id, error } => { assert_eq!(id.as_deref(), Some("g")); assert_eq!(error.code, "out_of_range"); }
