@@ -69,6 +69,44 @@ impl AudioEngine {
         }
     }
 
+    /// Opens the output alone, without a render tap: a battle has no microphone.
+    pub fn start_output(output: Option<String>) -> Result<(AudioEngine, PlaybackHandle), HaruError> {
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_t = stop.clone();
+        let (tx, rx) = mpsc::channel::<Result<PlaybackHandle, HaruError>>();
+        let thread = thread::Builder::new()
+            .name("haru-audio-out".into())
+            .spawn(move || {
+                let built = output_device(output.as_deref()).and_then(|dev| build_playback(&dev, PREBUFFER_FRAMES, false));
+                match built {
+                    Ok((out_stream, play)) => {
+                        if tx.send(Ok(play)).is_err() {
+                            return;
+                        }
+                        while !stop_t.load(Ordering::Acquire) {
+                            thread::park();
+                        }
+                        drop(out_stream);
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Err(e));
+                    }
+                }
+            })
+            .map_err(|e| HaruError::new(ErrorCode::AudioDevice, MsgKey::AudioStartFailed).with_detail(e.to_string()))?;
+        match rx.recv() {
+            Ok(Ok(play)) => Ok((AudioEngine { thread: Some(thread), stop }, play)),
+            Ok(Err(e)) => {
+                let _ = thread.join();
+                Err(e)
+            }
+            Err(_) => {
+                let _ = thread.join();
+                Err(HaruError::new(ErrorCode::AudioDevice, MsgKey::AudioStartFailed).with_detail("audio thread ended unexpectedly"))
+            }
+        }
+    }
+
     pub fn stop(mut self) {
         self.shutdown();
     }
