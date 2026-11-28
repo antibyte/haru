@@ -2,6 +2,7 @@ import type { FluidSim } from '../fluid/sim';
 import type { Box, RGB } from '../fluid/params';
 import { PAD_EM, type GlyphBitmap, type GlyphRasterizer } from './glyphs';
 import { RELEASE_MS, wordPhase } from './lifecycle';
+import type { Speaker } from '../ipc/types';
 import type { WordEvent } from './assembler';
 import type { WordPath } from './path';
 
@@ -27,6 +28,8 @@ const RELEASE_BLOCK_MS = 400;
 const MIN_VISIBLE_MS = 350;
 
 interface ActiveWord {
+  /** battle voice; decides the ember core per word */
+  speaker?: Speaker;
   id: number;
   text: string;
   bmp: GlyphBitmap;
@@ -83,6 +86,7 @@ export class WordInjector {
       this.words.set(ev.id, {
         id: ev.id, text: ev.text, bmp, box, visW: g2.visW, startMs: nowMs, endedAt: null, releaseAt: null,
         color: [1, 0.6, 0.2], reink: false, scale: spot.scale, forceReleaseAt: null,
+        speaker: ev.speaker,
       });
       this.newest = ev.id;
       return;
@@ -158,12 +162,13 @@ export class WordInjector {
       const bmp = this.glyphs.rasterize(w.text); // refreshes the LRU so an active texture is never evicted
       w.bmp = bmp;
       const ps = this.phaseOf(w, nowMs);
+      const ember = w.speaker ? w.speaker === 'daemon' : this.ember;
       if (ps.phase === 'ink') {
         w.color = color;
         const gain = (w.reink ? APPEND_INK_GAIN : INK_GAIN);
-        sim.maskSplatDye(bmp.texture, w.box, hot(w.color, 1, this.ember), gain * fk);
+        sim.maskSplatDye(bmp.texture, w.box, hot(w.color, 1, ember), gain * fk);
       } else if (ps.phase === 'hold') {
-        sim.maskSplatDye(bmp.texture, w.box, hot(w.color, 1, this.ember), (id === this.newest ? ACTIVE_HOLD_GAIN : HOLD_GAIN) * fk);
+        sim.maskSplatDye(bmp.texture, w.box, hot(w.color, 1, ember), (id === this.newest ? ACTIVE_HOLD_GAIN : HOLD_GAIN) * fk);
         sim.addRestMask(bmp.texture, w.box);
       } else {
         w.releaseAt ??= nowMs - (ps.phase === 'done' ? RELEASE_MS : ps.releaseT * RELEASE_MS);

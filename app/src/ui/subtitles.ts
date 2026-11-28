@@ -1,3 +1,4 @@
+import type { Speaker } from '../ipc/types';
 import type { WordEvent } from '../words/assembler';
 
 const MAX_LINE_UNITS = 46; // CJK glyphs count double
@@ -8,9 +9,9 @@ const SENTENCE_END = /[.!?。！？…]$/u;
 
 const units = (s: string) => [...s].reduce((n, ch) => n + (ch.charCodeAt(0) > 0x2e80 ? 2 : 1), 0);
 
-interface Word { id: number; text: string }
+interface Word { id: number; text: string; speaker?: Speaker }
 
-/** Optional bottom-centre captions: the last two lines of Haru's words, fading 4 s after the last event. */
+/** Optional bottom-centre captions: the last two lines, fading 4 s after the last event; in battles one colour per voice and a new line at each change. */
 export class Subtitles {
   private readonly rootEl: HTMLElement;
   private words: Word[] = [];
@@ -39,7 +40,7 @@ export class Subtitles {
     } else if (i >= 0) {
       this.words[i].text = e.text;
     } else {
-      this.words.push({ id: e.id, text: e.text });
+      this.words.push(e.speaker ? { id: e.id, text: e.text, speaker: e.speaker } : { id: e.id, text: e.text });
       if (this.words.length > MAX_WORDS) this.words.shift();
     }
     this.render();
@@ -62,14 +63,14 @@ export class Subtitles {
       const cur = lines[lines.length - 1];
       const prev = cur[cur.length - 1];
       const w_u = units(w.text) + 1;
-      const wrap = cur.length > 0 && (len + w_u > MAX_LINE_UNITS || (SENTENCE_END.test(prev.text) && len > 24));
+      const wrap = cur.length > 0 && (prev.speaker !== w.speaker || len + w_u > MAX_LINE_UNITS || (SENTENCE_END.test(prev.text) && len > 24));
       if (wrap) { lines.push([w]); len = w_u; } else { cur.push(w); len += w_u; }
     }
     const last = this.words[this.words.length - 1];
     const frag = document.createDocumentFragment();
     for (const line of lines.slice(-2)) {
       const row = document.createElement('div');
-      row.className = 'subtitle-line';
+      row.className = line[0]?.speaker ? `subtitle-line is-${line[0].speaker}` : 'subtitle-line';
       line.forEach((w, k) => {
         const span = document.createElement('span');
         span.className = w === last ? 'sub-word is-latest' : 'sub-word';

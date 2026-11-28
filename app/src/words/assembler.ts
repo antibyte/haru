@@ -1,6 +1,6 @@
-import type { WordPiece } from '../ipc/types';
+import type { Speaker, WordPiece } from '../ipc/types';
 
-export type WordEvent = { type: 'wordStart' | 'wordAppend' | 'wordEnd'; id: number; text: string; seq: number };
+export type WordEvent = { type: 'wordStart' | 'wordAppend' | 'wordEnd'; id: number; text: string; seq: number; speaker?: Speaker };
 
 const PUNCT = new Set('.,!?;:…。、！？，；：');
 const CJK_MAX_LEN = 8;
@@ -17,13 +17,21 @@ function isCjk(ch: string): boolean {
 interface OpenWord { id: number; text: string; cjk: boolean; len: number }
 interface Touch { id: number; started: boolean; changed: boolean; ended: boolean; text: string }
 
+/** An id source 1, 2, 3, …; assemblers that share one never hand out the same word id. */
+export function wordIds(): () => number {
+  let next = 1;
+  return () => next++;
+}
+
 /**
  * Turns the stream of model text frames (sub-word pieces) into word events.
- * Ids are monotonic over the lifetime of the instance (reset() keeps counting so
+ * Ids are monotonic over the lifetime of the id source (reset() keeps counting so
  * words still dissolving from an earlier conversation never collide).
  */
 export class WordAssembler {
-  private nextId = 1;
+  /** `nextId` hands out word ids (share one source between the two voices of a battle); `speaker` tags every event. */
+  constructor(private readonly nextId: () => number = wordIds(), private readonly speaker?: Speaker) {}
+
   private cur: OpenWord | null = null;
   private emptyRun = 0;
   private lastSeq = 0;
@@ -67,7 +75,7 @@ export class WordAssembler {
         const c = isCjk(ch);
         if (this.cur && (this.cur.cjk !== c || (c && this.cur.len >= CJK_MAX_LEN))) end();
         if (!this.cur) {
-          this.cur = { id: this.nextId++, text: '', cjk: c, len: 0 };
+          this.cur = { id: this.nextId(), text: '', cjk: c, len: 0 };
           touch(this.cur).started = true;
         }
         this.cur.text += ch;
@@ -79,9 +87,9 @@ export class WordAssembler {
 
     const out: WordEvent[] = [];
     for (const t of touches) {
-      if (t.started) out.push({ type: 'wordStart', id: t.id, text: t.text, seq: p.seq });
-      else if (t.changed) out.push({ type: 'wordAppend', id: t.id, text: t.text, seq: p.seq });
-      if (t.ended) out.push({ type: 'wordEnd', id: t.id, text: t.text, seq: p.seq });
+      if (t.started) out.push(this.event('wordStart', t.id, t.text, p.seq));
+      else if (t.changed) out.push(this.event('wordAppend', t.id, t.text, p.seq));
+      if (t.ended) out.push(this.event('wordEnd', t.id, t.text, p.seq));
     }
     return out;
   }
@@ -92,7 +100,11 @@ export class WordAssembler {
     const w = this.cur;
     this.cur = null;
     this.emptyRun = 0;
-    return [{ type: 'wordEnd', id: w.id, text: w.text, seq: this.lastSeq }];
+    return [this.event('wordEnd', w.id, w.text, this.lastSeq)];
+  }
+
+  private event(type: WordEvent['type'], id: number, text: string, seq: number): WordEvent {
+    return this.speaker ? { type, id, text, seq, speaker: this.speaker } : { type, id, text, seq };
   }
 
   reset(): void {

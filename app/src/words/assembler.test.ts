@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { WordAssembler } from './assembler';
+import { WordAssembler, wordIds } from './assembler';
 
 const code = { wordStart: 'S', wordAppend: 'A', wordEnd: 'E' } as const;
 
@@ -60,5 +60,18 @@ describe('WordAssembler', () => {
     a.push({ seq: 0, text: ' Hi' });
     a.reset();
     expect(a.push({ seq: 1, text: ' Ho' })[0].id).toBe(2);
+  });
+  it('a shared id source keeps ids unique across assemblers', () => {
+    const ids = wordIds();
+    const a = new WordAssembler(ids, 'angel');
+    const d = new WordAssembler(ids, 'daemon');
+    expect(a.push({ seq: 0, text: ' Ja' })[0].id).toBe(1);
+    expect(d.push({ seq: 0, text: ' Nein' })[0].id).toBe(2);
+    expect(a.push({ seq: 1, text: ' gut' }).map((e) => e.id)).toEqual([1, 3]);
+  });
+  it('a speaker assembler tags its events; a plain one does not', () => {
+    const d = new WordAssembler(wordIds(), 'daemon');
+    expect(d.push({ seq: 0, text: ' Pah.' }).every((e) => e.speaker === 'daemon')).toBe(true);
+    expect('speaker' in new WordAssembler().push({ seq: 0, text: ' Hi' })[0]).toBe(false);
   });
 });
