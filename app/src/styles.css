@@ -267,6 +267,29 @@
   .chooser-vs-caption { left: 100%; top: 50%; transform: translate(8px, -50%); text-align: left; }
 }
 
+/* ---------- battle: topic sheet ---------- */
+
+.topic { display: grid; place-items: center; }
+.topic-scrim { position: absolute; inset: 0; background: rgba(2, 1, 6, 0.5); }
+.topic-card {
+  position: relative; width: min(520px, 90vw); padding: 30px 30px 24px; border-radius: 22px; display: grid; gap: 16px;
+  transform: translateY(10px) scale(0.985); transition: transform 0.7s var(--ease);
+}
+.topic.is-visible .topic-card { transform: none; }
+.topic-label { font-size: 17px; font-weight: 300; color: var(--ink); text-align: center; text-wrap: balance; }
+.topic-row { display: flex; align-items: center; gap: 8px; }
+.topic-input {
+  flex: 1; min-width: 0; appearance: none; border: 1px solid var(--line); border-radius: 12px; background: rgba(255, 255, 255, 0.035);
+  padding: 11px 14px; font-size: 15px; font-weight: 300; color: var(--ink); outline: none; transition: border-color 0.25s, box-shadow 0.3s, background 0.25s;
+}
+.topic-input::placeholder { color: var(--ink-faint); }
+.topic-input:focus-visible {
+  border-color: rgba(255, 192, 106, 0.55); background: rgba(255, 255, 255, 0.055);
+  box-shadow: 0 0 0 3px rgba(255, 192, 106, 0.08), 0 0 28px rgba(255, 150, 110, 0.14);
+}
+.topic-dice { width: 40px; height: 40px; display: grid; place-items: center; flex: none; }
+.topic-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
 /* ---------- HUD ---------- */
 
 .hud {
@@ -452,7 +475,7 @@
   .chooser-vs-img { transition: opacity 0.01s, filter 0.01s; }
   .chooser-vs:hover .chooser-vs-img, .chooser-vs:focus-visible .chooser-vs-img, .chooser-vs.is-chosen .chooser-vs-img,
   .chooser-row:has(.chooser-vs:hover) .persona-img, .chooser-row:has(.chooser-vs:focus-visible) .persona-img { transform: none; }
-  .overlay, .hud, .toast, .settings-drawer, .hint-card { transition-duration: 0.01s; }
+  .overlay, .hud, .toast, .settings-drawer, .hint-card, .topic-card { transition-duration: 0.01s; }
 }
 
 /* ---------- window buttons + drag strip (frameless window) ---------- */
