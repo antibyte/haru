@@ -66,6 +66,15 @@ pub async fn start_conversation(core: CoreState<'_>, persona: Persona, on_viz: C
 }
 
 #[tauri::command]
+pub async fn start_battle(core: CoreState<'_>, topic: String, on_viz: Channel<VizFrame>) -> Result<(), HaruError> {
+    let core = core.inner().clone();
+    let sink: VizSink = Arc::new(move |f| {
+        let _ = on_viz.send(f);
+    });
+    tauri::async_runtime::spawn_blocking(move || core.start_battle(topic, sink)).await.map_err(join_err)?
+}
+
+#[tauri::command]
 pub async fn stop_conversation(core: CoreState<'_>) -> Result<(), HaruError> {
     let core = core.inner().clone();
     tauri::async_runtime::spawn_blocking(move || core.stop()).await.map_err(join_err)?

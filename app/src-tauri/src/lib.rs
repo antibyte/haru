@@ -113,6 +113,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             commands::backend_options,
             commands::boot,
             commands::start_conversation,
+            commands::start_battle,
             commands::stop_conversation,
             commands::set_muted,
             commands::play_cue,

@@ -27,6 +27,7 @@ use crate::paths::{model_path, ModelSpec};
 use crate::settings::{self, Settings};
 use crate::worker::process::{WorkerConfig, WorkerEvent, WorkerProcess, READY_TIMEOUT};
 use crate::worker::protocol::WorkerMsg;
+use battle::{battle_start, Battle, MAX_FRAMES};
 use budget::Probe;
 use conversation::{Conversation, ConversationEnd, ConversationIo, Renewal, VizSink};
 use state::{transition, Action};
@@ -67,6 +68,7 @@ struct Inner {
     worker: Option<WorkerProcess>,
     worker_gen: u64,
     conversation: Option<Conversation>,
+    battle: Option<Battle>,
     muted: bool,
     reload_pending: bool,
     boot_info: Option<BootInfo>,
@@ -116,6 +118,7 @@ impl Core {
                 worker: None,
                 worker_gen: 0,
                 conversation: None,
+                battle: None,
                 muted: false,
                 reload_pending: false,
                 boot_info: None,
@@ -454,7 +457,7 @@ impl Core {
     }
 
     fn worker_lost(self: &Arc<Self>, gen: u64) {
-        let (conv, worker, tail, idx, attempts_left, from_backend) = {
+        let (conv, battle, worker, tail, idx, attempts_left, from_backend) = {
             let mut g = self.lock();
             if g.worker_gen != gen || g.starting {
                 // Replaced on purpose, or `start` is in flight and handles the failure itself.
@@ -463,6 +466,7 @@ impl Core {
             g.worker_gen += 1;
             let worker = g.worker.take();
             let conv = g.conversation.take();
+            let battle = g.battle.take();
             let idx = g.attempt_idx;
             let attempts_left = idx + 1 < g.plan.len();
             let from_backend = g.plan.get(idx).map(|a| a.variant.as_str().to_string()).unwrap_or_default();
@@ -476,11 +480,12 @@ impl Core {
                     .with_detail(tail.clone());
                 let _ = self.set(&mut g, Action::WorkerLost { attempts_left: false }, None, Some(e));
             }
-            (conv, worker, tail, idx, attempts_left, from_backend)
+            (conv, battle, worker, tail, idx, attempts_left, from_backend)
         };
         let _ = tail;
         *self.conv_tx.lock().unwrap_or_else(|e| e.into_inner()) = None;
         drop(conv);
+        drop(battle);
         drop(worker);
         if attempts_left {
             let _ = self.load_from(idx + 1, Some((from_backend, MsgKey::BackendCrashedSwitched)));
@@ -656,16 +661,125 @@ impl Core {
         });
     }
 
+    // ---------------------------------------------------------------- battle
+
+    /// Starts a battle of the angel and the daemon on `topic`: `talking` while it runs, `ready` after.
+    pub fn start_battle(self: &Arc<Self>, topic: String, on_viz: VizSink) -> Result<(), HaruError> {
+        let topic = {
+            let mut g = self.lock();
+            transition(g.state, &Action::Start)?;
+            if g.starting || g.worker.is_none() {
+                return Err(busy());
+            }
+            let topic = battle_start(&topic, g.boot_info.as_ref().is_some_and(|b| b.battle))?;
+            g.starting = true;
+            g.early_end = None;
+            topic
+        };
+        let r = self.start_battle_inner(&topic, on_viz);
+        let mut g = self.lock();
+        g.starting = false;
+        if r.is_err() {
+            *self.conv_tx.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        }
+        r
+    }
+
+    fn start_battle_inner(self: &Arc<Self>, topic: &str, on_viz: VizSink) -> Result<(), HaruError> {
+        let (sender, settings) = {
+            let g = self.lock();
+            let Some(w) = g.worker.as_ref() else { return Err(busy()) };
+            (w.sender(), g.settings.clone())
+        };
+        let (tx, rx) = mpsc::channel();
+        *self.conv_tx.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
+        let id = format!("b{}", self.next_conv.fetch_add(1, Ordering::Relaxed));
+        let this = self.clone();
+        let end_id = id.clone();
+        let on_end: Arc<dyn Fn(ConversationEnd) + Send + Sync> = Arc::new(move |e| this.battle_ended(end_id.clone(), e));
+        let io = self.test_io.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        eprintln!("haru: battle {id}: {MAX_FRAMES} frames per speaker");
+        match Battle::start_with(sender, rx, &settings, settings.battle_options(topic), MAX_FRAMES, on_viz, on_end, id.clone(), &io) {
+            Ok(battle) => {
+                let early = {
+                    let mut g = self.lock();
+                    if g.shutting_down {
+                        drop(g);
+                        *self.conv_tx.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                        let _ = battle.abort();
+                        return Err(busy());
+                    }
+                    g.battle = Some(battle);
+                    self.set(&mut g, Action::Started, None, None)?;
+                    g.early_end.take()
+                };
+                if let Some((eid, end)) = early {
+                    if eid == id {
+                        self.battle_ended(eid, end);
+                    }
+                }
+                Ok(())
+            }
+            Err(e) => {
+                *self.conv_tx.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                // A battle never moves to another backend; a worker that did not answer is replaced by a fresh one.
+                if e.backend_failure {
+                    self.restart_current();
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// Called from the battle's own threads: it played out after the worker's end, or failed.
+    fn battle_ended(self: &Arc<Self>, id: String, end: ConversationEnd) {
+        let battle = {
+            let mut g = self.lock();
+            match g.battle.as_ref() {
+                Some(b) if b.id() == id => g.battle.take(),
+                _ => {
+                    if g.starting {
+                        g.early_end = Some((id, end));
+                    }
+                    return;
+                }
+            }
+        };
+        let Some(battle) = battle else { return };
+        let this = self.clone();
+        // Teardown joins the battle's threads, one of which is calling us.
+        std::thread::spawn(move || {
+            let stuck = battle.abort().is_err();
+            *this.conv_tx.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            let error = match end {
+                ConversationEnd::HungUp => None,
+                ConversationEnd::Failed(e) => Some(e),
+            };
+            {
+                let mut g = this.lock();
+                if this.set(&mut g, Action::Stopped, None, error).is_err() {
+                    return;
+                }
+            }
+            if stuck {
+                this.restart_current();
+            }
+        });
+    }
+
     pub fn stop(self: &Arc<Self>) -> Result<(), HaruError> {
-        let conv = {
+        let (conv, battle) = {
             let mut g = self.lock();
             if g.state != AppState::Talking {
                 return Ok(());
             }
-            g.conversation.take()
+            (g.conversation.take(), g.battle.take())
         };
-        let Some(conv) = conv else { return Ok(()) };
-        let r = conv.hang_up(Duration::from_secs(3));
+        let r = match (conv, battle) {
+            (Some(conv), _) => conv.hang_up(Duration::from_secs(3)),
+            (None, Some(battle)) => battle.hang_up(Duration::from_secs(3)),
+            (None, None) => return Ok(()),
+        };
         *self.conv_tx.lock().unwrap_or_else(|e| e.into_inner()) = None;
         {
             let mut g = self.lock();
@@ -713,14 +827,17 @@ impl Core {
     }
 
     pub fn shutdown(&self) {
-        let (conv, worker) = {
+        let (conv, battle, worker) = {
             let mut g = self.lock();
             g.shutting_down = true;
             g.worker_gen += 1;
-            (g.conversation.take(), g.worker.take())
+            (g.conversation.take(), g.battle.take(), g.worker.take())
         };
         if let Some(c) = conv {
             let _ = c.hang_up(Duration::from_secs(1));
+        }
+        if let Some(b) = battle {
+            let _ = b.hang_up(Duration::from_secs(1));
         }
         if let Some(mut w) = worker {
             w.shutdown(Duration::from_secs(2));
@@ -749,4 +866,21 @@ mod tests {
         );
         core.play_cue();
     }
-}
+
+    #[test]
+    fn start_battle_needs_a_ready_core() {
+        let d = tempfile::tempdir().unwrap();
+        let core = Core::new(
+            CoreConfig {
+                settings_path: d.path().join("settings.json"),
+                log_dir: d.path().join("logs"),
+                backends_dir: None,
+                models_dir: d.path().join("models"),
+                model: HARU_MODEL,
+                hf_base: "http://localhost".into(),
+            },
+            Arc::new(|_| {}),
+        );
+        let e = core.start_battle("Ist eine Notlüge erlaubt?".into(), Arc::new(|_| {})).unwrap_err();
+        assert_eq!(e.code, ErrorCode::Busy);
+    }}
