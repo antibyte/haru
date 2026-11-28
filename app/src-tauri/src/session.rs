@@ -25,7 +25,7 @@ use crate::ipc::{AppState, AttemptInfo, BackendOptions, BootInfo, SaveSettingsRe
 use crate::model_fetch::{ensure_model, is_present, FetchConfig};
 use crate::paths::{model_path, ModelSpec};
 use crate::settings::{self, Settings};
-use crate::worker::process::{WorkerConfig, WorkerEvent, WorkerProcess, READY_TIMEOUT};
+use crate::worker::process::{WorkerConfig, WorkerEvent, WorkerProcess, WorkerSender, READY_TIMEOUT};
 use crate::worker::protocol::WorkerMsg;
 use battle::{battle_start, Battle, MAX_FRAMES};
 use budget::Probe;
@@ -693,6 +693,11 @@ impl Core {
         };
         let (tx, rx) = mpsc::channel();
         *self.conv_tx.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
+        self.battle_with(sender, rx, settings, topic, on_viz)
+    }
+
+    /// Runs a battle on `sender` and `rx` and stores it in the core.
+    fn battle_with(self: &Arc<Self>, sender: WorkerSender, rx: mpsc::Receiver<WorkerMsg>, settings: Settings, topic: &str, on_viz: VizSink) -> Result<(), HaruError> {
         let id = format!("b{}", self.next_conv.fetch_add(1, Ordering::Relaxed));
         let this = self.clone();
         let end_id = id.clone();
@@ -883,4 +888,69 @@ mod tests {
         );
         let e = core.start_battle("Ist eine Notlüge erlaubt?".into(), Arc::new(|_| {})).unwrap_err();
         assert_eq!(e.code, ErrorCode::Busy);
-    }}
+    }
+    // ------------------------------------------------ battle lifecycle through the core
+
+    use crate::session::battle::test_support::{fixture, next_line, queue, sine, wait_until};
+
+    /// A core with no worker process, `Ready`, whose state events are collected; a fake-worker battle is started in it.
+    fn core_with_battle(end: bool, frames: usize) -> (Arc<Core>, Arc<Mutex<Vec<StateEvent>>>, mpsc::Receiver<serde_json::Value>, Sender<WorkerMsg>, tempfile::TempDir) {
+        let d = tempfile::tempdir().unwrap();
+        let events: Arc<Mutex<Vec<StateEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let e2 = events.clone();
+        let core = Core::new(
+            CoreConfig {
+                settings_path: d.path().join("settings.json"),
+                log_dir: d.path().join("logs"),
+                backends_dir: None,
+                models_dir: d.path().join("models"),
+                model: HARU_MODEL,
+                hf_base: "http://localhost".into(),
+            },
+            Arc::new(move |e| e2.lock().unwrap().push(e)),
+        );
+        core.set_test_io(ConversationIo { no_playback: true, ..Default::default() });
+        let fx = fixture();
+        queue(&fx, &sine(220.0, frames), &sine(140.0, frames), frames, end);
+        {
+            let mut g = core.lock();
+            g.state = AppState::Ready;
+            g.starting = true;
+        }
+        let crate::session::battle::test_support::Fixture { lines, worker, sender, events: rx } = fx;
+        core.battle_with(sender, rx, Settings::default(), "Ist eine Notlüge erlaubt?", Arc::new(|_| {})).expect("battle starts");
+        core.lock().starting = false;
+        (core, events, lines, worker, d)
+    }
+
+    fn states(events: &Arc<Mutex<Vec<StateEvent>>>) -> Vec<AppState> {
+        events.lock().unwrap().iter().map(|e| e.state).collect()
+    }
+
+    #[test]
+    fn stop_during_a_battle_returns_to_ready_once_and_ends_nothing() {
+        let (core, events, lines, worker, _dir) = core_with_battle(false, 1);
+        assert_eq!(states(&events), vec![AppState::Talking]);
+        let c = core.clone();
+        let t = std::thread::spawn(move || c.stop());
+        next_line(&lines, |v| v["type"] == "hang_up");
+        worker.send(WorkerMsg::End { id: "b1".into(), frames: Some(1), samples: None }).unwrap();
+        assert!(t.join().unwrap().is_ok());
+        assert!(core.stop().is_ok(), "a second stop is a no-op");
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(states(&events), vec![AppState::Talking, AppState::Ready]);
+        assert!(events.lock().unwrap().iter().all(|e| e.error.is_none()), "a stop reports no end of its own");
+        let g = core.lock();
+        assert!(g.battle.is_none() && g.state == AppState::Ready);
+    }
+
+    #[test]
+    fn a_battle_that_ends_by_itself_returns_to_ready_once() {
+        let (core, events, _lines, _worker, _dir) = core_with_battle(true, 2);
+        wait_until("the battle plays out and the core is ready", || states(&events).contains(&AppState::Ready));
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(states(&events), vec![AppState::Talking, AppState::Ready]);
+        assert!(events.lock().unwrap().iter().all(|e| e.error.is_none()));
+        assert!(core.lock().battle.is_none());
+    }
+}

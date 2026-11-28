@@ -558,8 +558,103 @@ impl Drop for Battle {
     }
 }
 
+/// Fake-worker helpers shared with the core's tests.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+    use crate::worker::pcm::encode_f32;
+    use serde_json::Value;
+    use std::io::Write;
+    use std::sync::mpsc::Sender;
+
+    /// Fake worker stdin: splits the written bytes into lines and forwards each as JSON.
+    pub(crate) struct LineTap {
+        buf: Vec<u8>,
+        tx: Sender<Value>,
+    }
+
+    impl Write for LineTap {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            self.buf.extend_from_slice(data);
+            while let Some(pos) = self.buf.iter().position(|b| *b == 10) {
+                let line: Vec<u8> = self.buf.drain(..=pos).collect();
+                let _ = self.tx.send(serde_json::from_slice(&line[..line.len() - 1]).expect("json line"));
+            }
+            Ok(data.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    pub(crate) struct Fixture {
+        pub(crate) lines: Receiver<Value>,
+        pub(crate) worker: Sender<WorkerMsg>,
+        pub(crate) sender: WorkerSender,
+        pub(crate) events: Receiver<WorkerMsg>,
+    }
+
+    pub(crate) fn fixture() -> Fixture {
+        let (ltx, lines) = mpsc::channel();
+        let (worker, events) = mpsc::channel();
+        Fixture { lines, worker, sender: WorkerSender::with_writer(LineTap { buf: Vec::new(), tx: ltx }, 512), events }
+    }
+
+    pub(crate) fn next_line(rx: &Receiver<Value>, pred: impl Fn(&Value) -> bool) -> Value {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let v = rx.recv_timeout(deadline.saturating_duration_since(Instant::now())).expect("expected line within 5 s");
+            if pred(&v) {
+                return v;
+            }
+        }
+    }
+
+    pub(crate) fn wait_until(what: &str, f: impl Fn() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !f() {
+            assert!(Instant::now() < deadline, "{what}");
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    pub(crate) fn chunk(speaker: u8, seq: u64, pcm: &[f32], text: &str) -> WorkerMsg {
+        WorkerMsg::Chunk { id: "b1".into(), seq, pcm: encode_f32(pcm), text: Some(text.into()), speaker: Some(speaker) }
+    }
+
+    /// `frames` frames of a sine at `hz` as the wire quantises them.
+    pub(crate) fn sine(hz: f32, frames: usize) -> Vec<f32> {
+        let x: Vec<f32> = (0..frames * FRAME_SAMPLES).map(|i| 0.3 * (2.0 * std::f32::consts::PI * hz * i as f32 / 24000.0).sin()).collect();
+        decode_f32(&encode_f32(&x)).unwrap()
+    }
+
+    pub(crate) fn frame(x: &[f32], seq: usize) -> &[f32] {
+        &x[seq * FRAME_SAMPLES..(seq + 1) * FRAME_SAMPLES]
+    }
+
+    /// Queues `frames` pairs of the two signals with texts `a<seq>` / `d<seq>`, then `end` when asked.
+    pub(crate) fn queue(fx: &Fixture, angel: &[f32], daemon: &[f32], frames: usize, end: bool) {
+        for seq in 0..frames {
+            fx.worker.send(chunk(0, seq as u64, frame(angel, seq), &format!("a{seq}"))).unwrap();
+            fx.worker.send(chunk(1, seq as u64, frame(daemon, seq), &format!("d{seq}"))).unwrap();
+        }
+        if end {
+            fx.worker.send(WorkerMsg::End { id: "b1".into(), frames: Some(frames as u64), samples: None }).unwrap();
+        }
+    }
+
+    /// Pairs of silence for the seqs `from..to`.
+    pub(crate) fn queue_silence(worker: &Sender<WorkerMsg>, from: usize, to: usize) {
+        for seq in from..to {
+            worker.send(chunk(0, seq as u64, &vec![0.0; FRAME_SAMPLES], "a")).unwrap();
+            worker.send(chunk(1, seq as u64, &vec![0.0; FRAME_SAMPLES], "d")).unwrap();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::test_support::*;
     use super::*;
 
     #[test]
@@ -619,87 +714,8 @@ mod tests {
 
     use crate::audio::voice_fx::VoiceStyle;
     use crate::ipc::VizFrame;
-    use crate::worker::pcm::encode_f32;
     use crate::worker::protocol::WorkerErrorBody;
-    use serde_json::{json, Value};
-    use std::io::Write;
-    use std::sync::mpsc::Sender;
-
-    /// Fake worker stdin: splits the written bytes into lines and forwards each as JSON.
-    struct LineTap {
-        buf: Vec<u8>,
-        tx: Sender<Value>,
-    }
-
-    impl Write for LineTap {
-        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-            self.buf.extend_from_slice(data);
-            while let Some(pos) = self.buf.iter().position(|b| *b == 10) {
-                let line: Vec<u8> = self.buf.drain(..=pos).collect();
-                let _ = self.tx.send(serde_json::from_slice(&line[..line.len() - 1]).expect("json line"));
-            }
-            Ok(data.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    struct Fixture {
-        lines: Receiver<Value>,
-        worker: Sender<WorkerMsg>,
-        sender: WorkerSender,
-        events: Receiver<WorkerMsg>,
-    }
-
-    fn fixture() -> Fixture {
-        let (ltx, lines) = mpsc::channel();
-        let (worker, events) = mpsc::channel();
-        Fixture { lines, worker, sender: WorkerSender::with_writer(LineTap { buf: Vec::new(), tx: ltx }, 512), events }
-    }
-
-    fn next_line(rx: &Receiver<Value>, pred: impl Fn(&Value) -> bool) -> Value {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            let v = rx.recv_timeout(deadline.saturating_duration_since(Instant::now())).expect("expected line within 5 s");
-            if pred(&v) {
-                return v;
-            }
-        }
-    }
-
-    fn wait_until(what: &str, f: impl Fn() -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !f() {
-            assert!(Instant::now() < deadline, "{what}");
-            thread::sleep(Duration::from_millis(5));
-        }
-    }
-
-    fn chunk(speaker: u8, seq: u64, pcm: &[f32], text: &str) -> WorkerMsg {
-        WorkerMsg::Chunk { id: "b1".into(), seq, pcm: encode_f32(pcm), text: Some(text.into()), speaker: Some(speaker) }
-    }
-
-    /// `frames` frames of a sine at `hz` as the wire quantises them.
-    fn sine(hz: f32, frames: usize) -> Vec<f32> {
-        let x: Vec<f32> = (0..frames * FRAME_SAMPLES).map(|i| 0.3 * (2.0 * std::f32::consts::PI * hz * i as f32 / 24000.0).sin()).collect();
-        decode_f32(&encode_f32(&x)).unwrap()
-    }
-
-    fn frame(x: &[f32], seq: usize) -> &[f32] {
-        &x[seq * FRAME_SAMPLES..(seq + 1) * FRAME_SAMPLES]
-    }
-
-    /// Queues `frames` pairs of the two signals with texts `a<seq>` / `d<seq>`, then `end` when asked.
-    fn queue(fx: &Fixture, angel: &[f32], daemon: &[f32], frames: usize, end: bool) {
-        for seq in 0..frames {
-            fx.worker.send(chunk(0, seq as u64, frame(angel, seq), &format!("a{seq}"))).unwrap();
-            fx.worker.send(chunk(1, seq as u64, frame(daemon, seq), &format!("d{seq}"))).unwrap();
-        }
-        if end {
-            fx.worker.send(WorkerMsg::End { id: "b1".into(), frames: Some(frames as u64), samples: None }).unwrap();
-        }
-    }
+    use serde_json::json;
 
     struct Run {
         battle: Battle,
@@ -811,13 +827,6 @@ mod tests {
         assert!(e.detail.unwrap().contains("out_of_memory"));
     }
 
-    /// Pairs of silence for the seqs `from..to`.
-    fn queue_silence(worker: &Sender<WorkerMsg>, from: usize, to: usize) {
-        for seq in from..to {
-            worker.send(chunk(0, seq as u64, &vec![0.0; FRAME_SAMPLES], "a")).unwrap();
-            worker.send(chunk(1, seq as u64, &vec![0.0; FRAME_SAMPLES], "d")).unwrap();
-        }
-    }
 
     fn failed_with(run: &Run) -> HaruError {
         match &run.ended.lock().unwrap()[0] {
