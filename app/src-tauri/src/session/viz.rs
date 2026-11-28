@@ -1,7 +1,7 @@
 //! FeatureClock: stamped model blocks (Task 1.6).
 
 use crate::audio::features::{Features, MIC_BANDS, MODEL_BANDS};
-use crate::ipc::{MicLevels, ModelLevels, VizFrame, WordPiece};
+use crate::ipc::{BattlePhase, BattleViz, MicLevels, ModelLevels, VizFrame, WordPiece};
 use std::collections::VecDeque;
 
 pub struct FeatureClock {
@@ -50,7 +50,28 @@ fn fixed<const N: usize>(f: Option<Features>) -> (f32, [f32; N]) {
 pub fn build_frame(t: f64, model: Option<Features>, mic: Option<Features>, latency_ms: f64, words: Vec<WordPiece>) -> VizFrame {
     let (mr, mb) = fixed::<MODEL_BANDS>(model);
     let (kr, kb) = fixed::<MIC_BANDS>(mic);
-    VizFrame { t, model: ModelLevels { rms: mr, bands: mb }, mic: MicLevels { rms: kr, bands: kb }, latency_ms, words }
+    VizFrame { t, model: ModelLevels { rms: mr, bands: mb }, mic: MicLevels { rms: kr, bands: kb }, latency_ms, words, battle: None }
+}
+
+/// The louder of the two voices heard now, the angel's on a tie: `model` of a battle frame.
+pub fn louder(angel: Option<Features>, daemon: Option<Features>) -> Option<Features> {
+    match (angel, daemon) {
+        (Some(a), Some(d)) => Some(if d.rms > a.rms { d } else { a }),
+        (a, d) => a.or(d),
+    }
+}
+
+/// A battle's viz frame: both voices as played, the louder as `model`, the mic silent and no latency.
+pub fn battle_frame(t: f64, angel: Option<Features>, daemon: Option<Features>, phase: BattlePhase, prepared: f64, words: Vec<WordPiece>) -> VizFrame {
+    let level = |f: Option<Features>| {
+        let (rms, bands) = fixed::<MODEL_BANDS>(f);
+        ModelLevels { rms, bands }
+    };
+    let model = louder(angel.clone(), daemon.clone());
+    VizFrame {
+        battle: Some(BattleViz { angel: level(angel), daemon: level(daemon), phase, prepared }),
+        ..build_frame(t, model, None, 0.0, words)
+    }
 }
 
 #[cfg(test)]
@@ -94,6 +115,25 @@ mod tests {
         c.push(800, f(0.3));
         assert_eq!(c.current(850).unwrap().rms, 0.3);
         assert_eq!(c.blocks.len(), 1);
+    }
+
+    #[test]
+    fn louder_picks_more_rms_and_the_angel_on_a_tie() {
+        assert_eq!(louder(Some(f(0.1)), Some(f(0.3))).unwrap().rms, 0.3);
+        let a = Features { rms: 0.2, bands: vec![0.1; 16] };
+        let d = Features { rms: 0.2, bands: vec![0.9; 16] };
+        assert_eq!(louder(Some(a), Some(d)).unwrap().bands, vec![0.1; 16]);
+        assert_eq!(louder(None, Some(f(0.1))).unwrap().rms, 0.1);
+        assert!(louder(None, None).is_none());
+    }
+
+    #[test]
+    fn battle_frame_has_both_levels_a_silent_mic_and_no_latency() {
+        let v = battle_frame(1.0, Some(f(0.1)), Some(f(0.4)), BattlePhase::Paused, 0.5, vec![]);
+        assert_eq!(v.model.rms, 0.4);
+        assert_eq!((v.mic.rms, v.mic.bands, v.latency_ms), (0.0, [0.0; 8], 0.0));
+        let b = v.battle.unwrap();
+        assert_eq!((b.angel.rms, b.daemon.rms, b.phase, b.prepared), (0.1, 0.4, BattlePhase::Paused, 0.5));
     }
 
     #[test]

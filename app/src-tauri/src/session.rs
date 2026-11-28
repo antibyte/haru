@@ -417,6 +417,7 @@ impl Core {
                 })
                 .collect(),
             warning: warning.clone(),
+            battle: ready.supports_battle(),
         };
         g.boot_info = Some(info.clone());
         self.set(&mut g, Action::Loaded, warning, None)?;

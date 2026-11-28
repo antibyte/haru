@@ -33,17 +33,38 @@ pub enum DownloadEvent {
 pub struct ModelLevels { pub rms: f32, pub bands: [f32; 16] }
 #[derive(Clone, Debug, PartialEq, Serialize)] #[serde(rename_all = "camelCase")]
 pub struct MicLevels { pub rms: f32, pub bands: [f32; 8] }
+/// Who speaks in a battle; the index in the battle request's `speakers`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Speaker { Angel, Daemon }
+
+impl Speaker {
+    pub fn from_index(i: u8) -> Option<Speaker> {
+        match i { 0 => Some(Speaker::Angel), 1 => Some(Speaker::Daemon), _ => None }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)] #[serde(rename_all = "camelCase")]
-pub struct WordPiece { pub seq: u64, pub text: String }
+pub struct WordPiece { pub seq: u64, pub text: String, #[serde(skip_serializing_if = "Option::is_none")] pub speaker: Option<Speaker> }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BattlePhase { Preparing, Playing, Paused }
+
+/// The battle part of a viz frame: each voice as played now, and the pre-buffer.
+#[derive(Clone, Debug, PartialEq, Serialize)] #[serde(rename_all = "camelCase")]
+pub struct BattleViz { pub angel: ModelLevels, pub daemon: ModelLevels, pub phase: BattlePhase, pub prepared: f64 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VizFrame {
     pub t: f64,               // seconds of Haru audio actually played in this conversation
-    pub model: ModelLevels,   // block audible now; zeros when nothing is audible
-    pub mic: MicLevels,       // latest mic chunk; zeros while muted
-    pub latency_ms: f64,      // backlog per latency policy, in ms
+    pub model: ModelLevels,   // block audible now; zeros when nothing is audible; in a battle the louder voice
+    pub mic: MicLevels,       // latest mic chunk; zeros while muted and in a battle
+    pub latency_ms: f64,      // backlog per latency policy, in ms; 0 in a battle
     pub words: Vec<WordPiece>,// every frame that became audible since the last VizFrame, seq order, text may be "" or " "
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub battle: Option<BattleViz>,
 }
 
 #[derive(Clone, Debug, Serialize)] #[serde(rename_all = "camelCase")]
@@ -57,7 +78,7 @@ pub struct BackendOptions { pub variants: Vec<String>, pub devices: Vec<DeviceIn
 #[derive(Clone, Debug, Serialize)] #[serde(rename_all = "camelCase")]
 pub struct AttemptInfo { pub backend: String, pub device: String, pub description: String }
 #[derive(Clone, Debug, Serialize)] #[serde(rename_all = "camelCase")]
-pub struct BootInfo { pub backend: String, pub device: String, pub device_name: String, pub model_path: String, pub plan: Vec<AttemptInfo>, pub warning: Option<UiText> }
+pub struct BootInfo { pub backend: String, pub device: String, pub device_name: String, pub model_path: String, pub plan: Vec<AttemptInfo>, pub warning: Option<UiText>, pub battle: bool }
 
 #[cfg(test)]
 mod tests {
@@ -104,8 +125,23 @@ mod tests {
         let mut bands = [0.0f32; 16];
         bands[1] = 0.5;
         let viz = VizFrame { t: 1.5, model: ModelLevels { rms: 0.25, bands }, mic: MicLevels { rms: 0.0, bands: [0.0; 8] },
-            latency_ms: 312.0, words: vec![WordPiece { seq: 7, text: " Hal".into() }] };
+            latency_ms: 312.0, words: vec![WordPiece { seq: 7, text: " Hal".into(), speaker: None }], battle: None };
         assert_eq!(ser(&viz), fx["vizFrame"]);
+
+        let boot = BootInfo { backend: "vulkan".into(), device: "Vulkan0".into(), device_name: "Intel(R) Arc(TM) B580 Graphics".into(),
+            model_path: "C:\\models\\Haru-4B-Q8_0.gguf".into(),
+            plan: vec![AttemptInfo { backend: "vulkan".into(), device: "Vulkan0".into(), description: "Intel(R) Arc(TM) B580 Graphics".into() }],
+            warning: None, battle: true };
+        assert_eq!(ser(&boot), fx["bootInfo"]);
+
+        let mut daemon_bands = [0.0f32; 16];
+        daemon_bands[1] = 0.5;
+        let battle_viz = VizFrame { t: 2.0, model: ModelLevels { rms: 0.25, bands: daemon_bands }, mic: MicLevels { rms: 0.0, bands: [0.0; 8] },
+            latency_ms: 0.0, words: vec![WordPiece { seq: 3, text: " nein".into(), speaker: Some(Speaker::Daemon) }],
+            battle: Some(BattleViz { angel: ModelLevels { rms: 0.0, bands: [0.0; 16] }, daemon: ModelLevels { rms: 0.25, bands: daemon_bands },
+                phase: BattlePhase::Playing, prepared: 1.0 }) };
+        assert_eq!(ser(&battle_viz), fx["vizFrameBattle"]);
+        assert!(!fx["startBattle"]["topic"].as_str().unwrap().trim().is_empty());
 
         assert_eq!(ser(&Settings::default()), fx["settingsDefault"]);
 
@@ -114,6 +150,17 @@ mod tests {
         assert_eq!(persona, crate::cards::Persona::Daemon);
         assert_eq!(serde_json::to_value(persona).unwrap(), fx["startConversation"]["persona"]);
         let _ = json!(null);
+    }
+
+    #[test]
+    fn speaker_and_phase_serialize_lowercase() {
+        assert_eq!(serde_json::to_value(Speaker::Angel).unwrap(), "angel");
+        assert_eq!(serde_json::to_value(Speaker::Daemon).unwrap(), "daemon");
+        assert_eq!(serde_json::to_value(BattlePhase::Preparing).unwrap(), "preparing");
+        assert_eq!(serde_json::to_value(BattlePhase::Paused).unwrap(), "paused");
+        assert_eq!((Speaker::from_index(0), Speaker::from_index(1), Speaker::from_index(2)), (Some(Speaker::Angel), Some(Speaker::Daemon), None));
+        let w = serde_json::to_value(WordPiece { seq: 1, text: "x".into(), speaker: None }).unwrap();
+        assert!(w.get("speaker").is_none());
     }
 
     mod erased {

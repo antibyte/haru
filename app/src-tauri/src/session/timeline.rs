@@ -1,11 +1,11 @@
 //! Frame timeline {seq, text, startSample} (Task 1.6).
 
-use crate::ipc::WordPiece;
+use crate::ipc::{Speaker, WordPiece};
 use std::collections::VecDeque;
 
 #[derive(Default)]
 pub struct FrameTimeline {
-    entries: VecDeque<(u64, String, u64)>,
+    entries: VecDeque<(u64, String, u64, Option<Speaker>)>,
 }
 
 impl FrameTimeline {
@@ -14,18 +14,23 @@ impl FrameTimeline {
     }
 
     pub fn push(&mut self, seq: u64, text: String, start_sample: u64) {
-        self.entries.push_back((seq, text, start_sample));
+        self.entries.push_back((seq, text, start_sample, None));
+    }
+
+    /// A battle frame's text of one speaker.
+    pub fn push_spoken(&mut self, seq: u64, text: String, start_sample: u64, speaker: Speaker) {
+        self.entries.push_back((seq, text, start_sample, Some(speaker)));
     }
 
     /// Entries whose audio has started playing (`start_sample <= played`), in order, once.
     pub fn drain_audible(&mut self, played: u64) -> Vec<WordPiece> {
         let mut out = Vec::new();
-        while let Some((_, _, start)) = self.entries.front() {
+        while let Some((_, _, start, _)) = self.entries.front() {
             if *start > played {
                 break;
             }
-            let (seq, text, _) = self.entries.pop_front().unwrap();
-            out.push(WordPiece { seq, text });
+            let (seq, text, _, speaker) = self.entries.pop_front().unwrap();
+            out.push(WordPiece { seq, text, speaker });
         }
         out
     }
@@ -55,6 +60,15 @@ mod tests {
         assert_eq!(a.iter().map(|w| w.seq).collect::<Vec<_>>(), vec![0, 1, 2]);
         assert!(t.drain_audible(250).is_empty());
         assert_eq!(t.drain_audible(10_000).len(), 1);
+    }
+
+    #[test]
+    fn spoken_entries_keep_their_speaker() {
+        let mut t = FrameTimeline::new();
+        t.push(0, "a".into(), 0);
+        t.push_spoken(1, "b".into(), 0, Speaker::Daemon);
+        let w = t.drain_audible(0);
+        assert_eq!((w[0].speaker, w[1].speaker), (None, Some(Speaker::Daemon)));
     }
 
     #[test]
