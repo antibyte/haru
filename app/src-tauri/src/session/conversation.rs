@@ -19,7 +19,7 @@ use crate::error::{ErrorCode, HaruError};
 use crate::messages::{MsgKey, UiText};
 use crate::ipc::VizFrame;
 use crate::session::latency::{backlog_secs, classify, LagLevel};
-use crate::session::mic_pump::{spawn_mic_pump, spawn_sample_feeder_with_room, EchoInput, MicShared};
+use crate::session::mic_pump::{discard_base, spawn_mic_pump, spawn_sample_feeder_with_room, EchoInput, MicShared};
 use crate::session::timeline::FrameTimeline;
 use crate::session::viz::{build_frame, FeatureClock};
 use crate::settings::Settings;
@@ -999,7 +999,7 @@ impl Conversation {
         let on_fatal: Arc<dyn Fn(HaruError) + Send + Sync> = Arc::new(move |e| fatal_inner.fire_end(ConversationEnd::Failed(e)));
         threads.push(spawn_mic_pump(capture, sender.clone(), mic.clone(), on_fatal, echo));
         if let Some((samples, rate, producer)) = feeder {
-            threads.push(spawn_sample_feeder_with_room(samples, rate, producer, mic.clone(), feeder_room));
+            threads.push(discard_base(spawn_sample_feeder_with_room(samples, rate, producer, mic.clone(), feeder_room)));
         }
 
         // 4. Dispatch thread, wait for frame 0. One voice processor per conversation (survives segment renewals).

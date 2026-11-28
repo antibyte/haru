@@ -238,24 +238,36 @@ pub fn spawn_sample_feeder(
     producer: rtrb::Producer<f32>,
     shared: Arc<MicShared>,
 ) -> JoinHandle<()> {
-    spawn_sample_feeder_with_room(samples, rate, producer, shared, None)
+    discard_base(spawn_sample_feeder_with_room(samples, rate, producer, shared, None))
+}
+
+/// A `JoinHandle<()>` for a feeder whose room offset nobody needs: a thread that joins it and drops the offset.
+pub fn discard_base(feeder: JoinHandle<i64>) -> JoinHandle<()> {
+    thread::Builder::new()
+        .name("haru-mic-feeder-join".into())
+        .spawn(move || {
+            feeder.join().expect("sample feeder thread");
+        })
+        .expect("spawn sample feeder join thread")
 }
 
 /// Like `spawn_sample_feeder`, but with a simulated room: the echo of what the virtual player played is mixed into
 /// every delivered sample (the room works at `rate`, the capture rate), clamped like an ADC would.
+/// The thread returns its `base`: the capture-rate samples between the room's clock origin and the first delivered
+/// sample (0 without a room, or when it was stopped before it started).
 pub fn spawn_sample_feeder_with_room(
     samples: Vec<f32>,
     rate: u32,
     mut producer: rtrb::Producer<f32>,
     shared: Arc<MicShared>,
     room: Option<Arc<Mutex<Room>>>,
-) -> JoinHandle<()> {
+) -> JoinHandle<i64> {
     thread::Builder::new()
         .name("haru-mic-feeder".into())
         .spawn(move || {
             while !shared.started.load(Ordering::Acquire) {
                 if shared.stop.load(Ordering::Acquire) {
-                    return;
+                    return 0;
                 }
                 thread::sleep(POLL);
             }
@@ -286,6 +298,7 @@ pub fn spawn_sample_feeder_with_room(
                 let r = r.lock().unwrap_or_else(|e| e.into_inner());
                 eprintln!("haru: echo sim: {} echo samples were requested before the played audio existed (treated as silence)", r.starved);
             }
+            base
         })
         .expect("spawn sample feeder thread")
 }
@@ -510,7 +523,7 @@ mod tests {
         let feeder = spawn_sample_feeder_with_room(vec![0.0; 100], 16_000, prod, shared.clone(), Some(room));
         thread::sleep(Duration::from_millis(400));
         shared.stop.store(true, Ordering::Release);
-        feeder.join().unwrap();
+        let base = feeder.join().unwrap();
         let mut got = Vec::new();
         while let Ok(s) = cons.pop() {
             got.push(s);
@@ -518,7 +531,9 @@ mod tests {
         let (peak, v) = got.iter().enumerate().fold((0, 0.0f32), |a, (i, s)| if s.abs() > a.1.abs() { (i, *s) } else { a });
         assert!((v - 0.4).abs() < 1e-6, "peak {v}");
         // Delivered sample n is at (base + n) of the room clock; base is the few ms between Room::new and the feeder start.
-        // Under load the feeder may start late (tolerated: 50 ms = 800 samples); it never starts before the room.
-        assert!((1600 - 800..=1600).contains(&peak), "peak at {peak}");
+        // The echo of the sample at 800 comes 50 ms (800 samples) later, and delivered sample n is at (base + n) of
+        // the room's clock, so the peak is exactly at 1600 - base however late the feeder started. A feeder that
+        // dropped the device latency or the acoustic delay would be off by 480 or 320 samples.
+        assert_eq!(peak as i64, 1600 - base, "peak at {peak}, base {base}");
     }
 }
