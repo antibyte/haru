@@ -58,7 +58,7 @@ export interface Settings {
   echoCancellation: boolean;
 }
 export const DEFAULT_SETTINGS: Settings = { language: 'de', name: 'Haru', gender: null, backchannel: null, speakFirst: true,
-  temperature: 0.7, battleTemperature: 0.9, topK: 25, voicePath: null, inputDevice: null, outputDevice: null, backend: 'auto', device: 'auto', quality: 'auto',
+  temperature: 0.7, battleTemperature: 0.8, topK: 25, voicePath: null, inputDevice: null, outputDevice: null, backend: 'auto', device: 'auto', quality: 'auto',
   subtitles: false, showFace: true, lagLimitSecs: 1.0, headphoneHintSeen: false,
   echoCancellation: true };
 export interface SaveSettingsResult { settings: Settings; reloadRequired: boolean }

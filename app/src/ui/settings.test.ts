@@ -20,8 +20,8 @@ const save = () => [...root.querySelectorAll<HTMLButtonElement>('button')].find(
 describe('battle temperature', () => {
   it('the defaults are 0.7 and 0.9 and match the contract fixture', () => {
     expect(DEFAULT_SETTINGS.temperature).toBe(0.7);
-    expect(DEFAULT_SETTINGS.battleTemperature).toBe(0.9);
-    expect((fixtures.settingsDefault as Settings).battleTemperature).toBe(0.9);
+    expect(DEFAULT_SETTINGS.battleTemperature).toBe(0.8);
+    expect((fixtures.settingsDefault as Settings).battleTemperature).toBe(0.8);
   });
 
   it('a second slider sits right under the temperature slider and reads battleTemperature', () => {

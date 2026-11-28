@@ -19,7 +19,7 @@ pub const TEMPERATURE_MIN: f64 = 0.3;
 pub const TEMPERATURE_MAX: f64 = 1.0;
 pub const TEMPERATURE_DEFAULT: f64 = 0.7;
 /// The temperature of a battle (same range): the two voices need more play than a chat.
-pub const BATTLE_TEMPERATURE_DEFAULT: f64 = 0.9;
+pub const BATTLE_TEMPERATURE_DEFAULT: f64 = 0.8;
 /// The voice chat default before 0.7; a settings file from then, without a battle temperature, is moved to the new one.
 const OLD_TEMPERATURE_DEFAULT: f64 = 0.6;
 
@@ -32,7 +32,7 @@ pub struct Settings {
     pub backchannel: Option<String>, // None | "low" | "mid" | "high"
     pub speak_first: bool,           // true
     pub temperature: f64,            // 0.7 (TEMPERATURE_DEFAULT)
-    pub battle_temperature: f64,     // 0.9 (BATTLE_TEMPERATURE_DEFAULT): the temperature of both speakers in a battle
+    pub battle_temperature: f64,     // 0.8 (BATTLE_TEMPERATURE_DEFAULT): the temperature of both speakers in a battle
     pub top_k: u32,                  // 25
     pub voice_path: Option<String>,  // None
     pub input_device: Option<String>,
@@ -289,7 +289,7 @@ mod tests {
         assert!(s.gender.is_none() && s.backchannel.is_none() && s.voice_path.is_none());
         assert!(s.speak_first);
         assert_eq!(s.temperature, 0.7);
-        assert_eq!(s.battle_temperature, 0.9);
+        assert_eq!(s.battle_temperature, 0.8);
         assert_eq!(s.top_k, 25);
         assert_eq!((s.backend.as_str(), s.device.as_str(), s.quality.as_str()), ("auto", "auto", "auto"));
         assert!(!s.subtitles);
@@ -434,7 +434,7 @@ mod tests {
 
     #[test]
     fn the_battle_temperature_has_the_same_range_and_defaults_to_0_9() {
-        assert_eq!(serde_json::to_value(Settings::default()).unwrap()["battleTemperature"], json!(0.9));
+        assert_eq!(serde_json::to_value(Settings::default()).unwrap()["battleTemperature"], json!(0.8));
         for bad in [0.29, 1.01] {
             let e = Settings { battle_temperature: bad, ..Default::default() }.validate().unwrap_err();
             assert_eq!(e.key, MsgKey::TemperatureRange, "{bad}");
@@ -449,7 +449,7 @@ mod tests {
             assert_eq!(load(&p).battle_temperature, want, "stored {stored}");
         }
         std::fs::write(&p, "{}").unwrap();
-        assert_eq!(load(&p).battle_temperature, 0.9, "an old file without it");
+        assert_eq!(load(&p).battle_temperature, 0.8, "an old file without it");
     }
 
     #[test]
@@ -481,7 +481,7 @@ mod tests {
             let s = Settings { temperature: bad, ..Default::default() }.sanitized(no_os_locales);
             assert_eq!(s.temperature, 0.7);
             let b = Settings { battle_temperature: bad, ..Default::default() }.sanitized(no_os_locales);
-            assert_eq!(b.battle_temperature, 0.9);
+            assert_eq!(b.battle_temperature, 0.8);
         }
     }
 
