@@ -7,12 +7,13 @@ import {
   LANGUAGE_NAMES, S, errorText, fill, getLanguage, resolveLanguage, sameText, setLanguage, uiText,
 } from './strings';
 
-type Tree = { readonly [k: string]: string | Tree };
+type Tree = { readonly [k: string]: string | readonly string[] | Tree };
 
 /** Every leaf as [dotted path, text]. */
 function leaves(t: Tree, prefix = ''): [string, string][] {
   return Object.entries(t).flatMap(([k, v]): [string, string][] =>
-    typeof v === 'string' ? [[prefix + k, v]] : leaves(v, `${prefix}${k}.`));
+    typeof v === 'string' ? [[prefix + k, v]]
+      : Array.isArray(v) ? v.map((s, i): [string, string] => [`${prefix}${k}.${i}`, s]) : leaves(v as Tree, `${prefix}${k}.`));
 }
 
 const placeholders = (s: string) => [...s.matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort();
@@ -22,6 +23,15 @@ const deLeaves = leaves(de);
 const others = Object.entries(TABLES).filter(([lang]) => lang !== 'de') as [string, Tree][];
 
 describe('locale tables', () => {
+  it('every language has 12 distinct battle topics of at most 120 code points', () => {
+    for (const [lang, t] of Object.entries(TABLES)) {
+      const topics = [...t.battle.topics];
+      expect(topics, lang).toHaveLength(12);
+      expect(new Set(topics).size, lang).toBe(12);
+      for (const s of topics) expect([...s].length, `${lang}: ${s}`).toBeLessThanOrEqual(120);
+    }
+  });
+
   it('German and English exist', () => {
     expect(TABLES.de).toBeDefined();
     expect(TABLES.en).toBeDefined();

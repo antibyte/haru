@@ -31,8 +31,8 @@ const PROGRESS: DownloadEvent = { event: 'progress', data: { downloaded: 1.35e9,
 
 // ------------------------------------------------------------------ German leftover detection
 
-type Tree = { readonly [k: string]: string | Tree };
-const leafTexts = (t: Tree): string[] => Object.values(t).flatMap((v) => (typeof v === 'string' ? [v] : leafTexts(v)));
+type Tree = { readonly [k: string]: string | readonly string[] | Tree };
+const leafTexts = (t: Tree): string[] => Object.values(t).flatMap((v) => (typeof v === 'string' ? [v] : Array.isArray(v) ? [...v] : leafTexts(v as Tree)));
 /** The literal parts of a template (around its placeholders) that contain a word. */
 const fragments = (s: string) => s.split(/\{\w+\}/).map((f) => f.trim()).filter((f) => /\p{L}{2,}/u.test(f));
 const english = new Set(leafTexts(en).flatMap((s) => [s, ...fragments(s)]));
