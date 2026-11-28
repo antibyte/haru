@@ -27,7 +27,7 @@ use crate::session::viz::{battle_frame, FeatureClock};
 use crate::settings::Settings;
 use crate::worker::pcm::decode_f32;
 use crate::worker::process::WorkerSender;
-use crate::worker::protocol::{battle_error, ClientMsg, DialogueOptions, WorkerMsg};
+use crate::worker::protocol::{battle_error, worker_error, ClientMsg, DialogueOptions, WorkerMsg};
 
 /// Frames each speaker gives at most: 10 minutes.
 pub const MAX_FRAMES: u32 = 4500;
@@ -163,7 +163,12 @@ struct Inner {
 }
 
 impl Inner {
+    /// Reports the end to the owner, unless the battle is being stopped: a stop (`hang_up`, `abort`, drop) is the
+    /// owner's own act and it makes its own state transition, and `on_end` could take a lock the stopping caller holds.
     fn fire_end(&self, e: ConversationEnd) {
+        if self.stop.load(Ordering::Acquire) {
+            return;
+        }
         if !self.end_fired.swap(true, Ordering::AcqRel) {
             (self.on_end)(e);
         }
@@ -234,6 +239,7 @@ fn dispatch_loop(inner: Arc<Inner>, events: Receiver<WorkerMsg>, mut out: Out, f
     let mut started = 0u64;
     let mut origin: Option<Instant> = None;
     let mut got_first = false;
+    let mut generated = 0u64;
     let mut worker_ended = false;
     let mut dead = false;
     let mut last_push = Instant::now();
@@ -272,6 +278,7 @@ fn dispatch_loop(inner: Arc<Inner>, events: Receiver<WorkerMsg>, mut out: Out, f
                         let at = *origin.get_or_insert_with(Instant::now);
                         pending.push_back(voice_and_mix(pair, &mut voices, &mut analyzers));
                         lock(&inner.buffer).generated(at.elapsed());
+                        generated += 1;
                         if !got_first {
                             got_first = true;
                             let _ = first_tx.send(Ok(()));
@@ -284,12 +291,14 @@ fn dispatch_loop(inner: Arc<Inner>, events: Receiver<WorkerMsg>, mut out: Out, f
                     }
                 }
             }
-            Ok(WorkerMsg::End { id, .. }) if id == inner.id => {
+            Ok(WorkerMsg::End { id, frames, .. }) if id == inner.id => {
                 if !got_first {
                     fail!(HaruError::new(ErrorCode::Worker, MsgKey::WorkerNoAnswer).with_detail("the battle ended before its first frame").backend_failure());
                 }
                 if pairs.pending() {
                     fail!(bad_frame("the battle ended after an angel frame without its daemon frame".into()));
+                } else if let Some(n) = frames.filter(|n| *n != generated) {
+                    fail!(bad_frame(format!("the battle ended after {n} frames, but {generated} pairs arrived")));
                 }
                 inner.set_terminal();
                 worker_ended = true;
@@ -304,10 +313,11 @@ fn dispatch_loop(inner: Arc<Inner>, events: Receiver<WorkerMsg>, mut out: Out, f
                 }
             }
             Ok(WorkerMsg::Error { id, error }) if id.as_deref().map_or(true, |i| i == inner.id) => fail!(battle_error(&error)),
+            Ok(WorkerMsg::Fatal { error }) => fail!(worker_error(&error).backend_failure()),
             Ok(_) => {}
             Err(RecvTimeoutError::Timeout) => {
                 if !got_first && Instant::now() >= first_deadline {
-                    let _ = inner.sender.send(&ClientMsg::Cancel { id: inner.id.clone() });
+                    // `start_with` cancels the request when it gets this error.
                     let _ = first_tx.send(Err(HaruError::new(ErrorCode::Worker, MsgKey::WorkerNoAnswer)
                         .with_detail("no frame 0 of the battle within 30 s")
                         .backend_failure()));
@@ -376,6 +386,8 @@ fn ticker_loop(inner: Arc<Inner>, on_viz: VizSink, shared: Arc<PlaybackShared>, 
 }
 
 pub struct Battle {
+    #[cfg(test)]
+    probe: Arc<PlaybackShared>,
     inner: Arc<Inner>,
     engine: Option<AudioEngine>,
     threads: Vec<JoinHandle<()>>,
@@ -465,6 +477,8 @@ impl Battle {
             abort(&inner, threads);
             return Err(e);
         }
+        #[cfg(test)]
+        let probe = shared.clone();
         {
             let inner = inner.clone();
             threads.push(
@@ -474,7 +488,13 @@ impl Battle {
                     .expect("spawn battle viz thread"),
             );
         }
-        Ok(Battle { inner, engine, threads })
+        Ok(Battle {
+            #[cfg(test)]
+            probe,
+            inner,
+            engine,
+            threads,
+        })
     }
 
     pub fn id(&self) -> &str {
@@ -789,4 +809,116 @@ mod tests {
         assert_eq!(e.key, MsgKey::WorkerError);
         assert!(!e.backend_failure);
         assert!(e.detail.unwrap().contains("out_of_memory"));
-    }}
+    }
+
+    /// Pairs of silence for the seqs `from..to`.
+    fn queue_silence(worker: &Sender<WorkerMsg>, from: usize, to: usize) {
+        for seq in from..to {
+            worker.send(chunk(0, seq as u64, &vec![0.0; FRAME_SAMPLES], "a")).unwrap();
+            worker.send(chunk(1, seq as u64, &vec![0.0; FRAME_SAMPLES], "d")).unwrap();
+        }
+    }
+
+    fn failed_with(run: &Run) -> HaruError {
+        match &run.ended.lock().unwrap()[0] {
+            ConversationEnd::Failed(e) => e.clone(),
+            ConversationEnd::HungUp => panic!("the battle was expected to fail"),
+        }
+    }
+
+    #[test]
+    fn an_unexpected_cancelled_fails_the_battle() {
+        let fx = fixture();
+        queue(&fx, &sine(220.0, 1), &sine(140.0, 1), 1, false);
+        let run = start(fx.events, fx.sender.clone()).expect("start");
+        fx.worker.send(WorkerMsg::Cancelled { id: "b1".into() }).unwrap();
+        wait_until("the battle fails", || !run.ended.lock().unwrap().is_empty());
+        let e = failed_with(&run);
+        assert_eq!(e.key, MsgKey::ConversationAborted);
+        assert!(e.backend_failure);
+    }
+
+    #[test]
+    fn a_fatal_mid_run_fails_the_battle_as_a_backend_failure() {
+        let fx = fixture();
+        queue(&fx, &sine(220.0, 1), &sine(140.0, 1), 1, false);
+        let run = start(fx.events, fx.sender.clone()).expect("start");
+        fx.worker.send(WorkerMsg::Fatal { error: WorkerErrorBody { code: "device".into(), option: None, message: "lost".into() } }).unwrap();
+        wait_until("the battle fails", || !run.ended.lock().unwrap().is_empty());
+        let e = failed_with(&run);
+        assert_eq!(e.key, MsgKey::WorkerError);
+        assert!(e.backend_failure);
+    }
+
+    #[test]
+    fn an_end_with_another_frame_count_than_generated_is_a_bad_frame() {
+        let fx = fixture();
+        queue(&fx, &sine(220.0, 2), &sine(140.0, 2), 2, false);
+        fx.worker.send(WorkerMsg::End { id: "b1".into(), frames: Some(3), samples: None }).unwrap();
+        let run = start(fx.events, fx.sender.clone()).expect("start");
+        wait_until("the battle fails", || !run.ended.lock().unwrap().is_empty());
+        assert_eq!(failed_with(&run).key, MsgKey::WorkerBadFrame);
+    }
+
+    #[test]
+    fn a_hang_up_the_worker_ignores_is_escalated_to_a_cancel() {
+        let fx = fixture();
+        queue(&fx, &sine(220.0, 1), &sine(140.0, 1), 1, false);
+        let run = start(fx.events, fx.sender.clone()).expect("start");
+        let battle = run.battle;
+        let t = thread::spawn(move || battle.hang_up(Duration::from_millis(200)));
+        next_line(&fx.lines, |v| v["type"] == "hang_up" && v["id"] == "b1");
+        next_line(&fx.lines, |v| v["type"] == "cancel" && v["id"] == "b1");
+        fx.worker.send(WorkerMsg::Cancelled { id: "b1".into() }).unwrap();
+        assert!(t.join().unwrap().is_ok());
+    }
+
+    #[test]
+    fn an_audio_failure_cancels_the_worker_and_fails_the_battle() {
+        let fx = fixture();
+        queue(&fx, &sine(220.0, 1), &sine(140.0, 1), 1, false);
+        let run = start(fx.events, fx.sender.clone()).expect("start");
+        run.battle.probe.failed.store(true, Ordering::Release);
+        next_line(&fx.lines, |v| v["type"] == "cancel" && v["id"] == "b1");
+        wait_until("the battle fails", || !run.ended.lock().unwrap().is_empty());
+        assert_eq!(failed_with(&run).key, MsgKey::AudioDeviceLost);
+    }
+
+    #[test]
+    fn nothing_ends_a_battle_after_a_stop() {
+        let fx = fixture();
+        queue(&fx, &sine(220.0, 1), &sine(140.0, 1), 1, false);
+        let run = start(fx.events, fx.sender.clone()).expect("start");
+        let (inner, ended) = (run.battle.inner.clone(), run.ended.clone());
+        drop(run.battle);
+        inner.fire_end(ConversationEnd::Failed(HaruError::new(ErrorCode::AudioDevice, MsgKey::AudioDeviceLost)));
+        inner.fire_end(ConversationEnd::HungUp);
+        assert!(ended.lock().unwrap().is_empty(), "a stopped battle must not call on_end: its caller may hold a lock");
+    }
+
+    #[test]
+    fn the_buffer_pauses_when_it_runs_dry_and_resumes_after_22_new_frames() {
+        let fx = fixture();
+        queue_silence(&fx.worker, 0, 22);
+        let run = start(fx.events, fx.sender.clone()).expect("start");
+        let phases = |run: &Run| -> Vec<BattlePhase> {
+            let mut p: Vec<BattlePhase> = run.viz.lock().unwrap().iter().filter_map(|f| f.battle.as_ref().map(|b| b.phase)).filter(|p| *p != BattlePhase::Preparing).collect();
+            p.dedup();
+            p
+        };
+        // The 22 frames play for about 2.9 s of real time, then nothing is left: paused.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !phases(&run).contains(&BattlePhase::Paused) {
+            assert!(Instant::now() < deadline, "never paused: {:?}", phases(&run));
+            thread::sleep(Duration::from_millis(10));
+        }
+        queue_silence(&fx.worker, 22, 44);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while phases(&run).last() != Some(&BattlePhase::Playing) || !phases(&run).contains(&BattlePhase::Paused) {
+            assert!(Instant::now() < deadline, "never resumed: {:?}", phases(&run));
+            thread::sleep(Duration::from_millis(10));
+        }
+        fx.worker.send(WorkerMsg::End { id: "b1".into(), frames: Some(44), samples: None }).unwrap();
+        assert_eq!(phases(&run), vec![BattlePhase::Playing, BattlePhase::Paused, BattlePhase::Playing]);
+    }
+}
