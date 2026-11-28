@@ -31,16 +31,30 @@ pub struct Pair {
 #[derive(Default)]
 pub struct FramePairs {
     held: Option<(u64, Vec<f32>, String)>,
+    /// The `seq` of the last pair given out; a pair never comes twice.
+    last: Option<u64>,
 }
 
 impl FramePairs {
+    /// An angel frame is waiting for its daemon frame.
+    pub fn pending(&self) -> bool {
+        self.held.is_some()
+    }
+
     pub fn accept(&mut self, speaker: Option<u8>, seq: u64, pcm: Vec<f32>, text: String) -> Result<Option<Pair>, String> {
         match (speaker, self.held.take()) {
+            (Some(0), None) if self.last.is_some_and(|l| seq <= l) => Err(format!("angel frame with seq {seq} after the pair {:?}", self.last)),
             (Some(0), None) => {
                 self.held = Some((seq, pcm, text));
                 Ok(None)
             }
-            (Some(1), Some((held, angel, angel_text))) if held == seq => Ok(Some(Pair { seq, frames: [angel, pcm], texts: [angel_text, text] })),
+            (Some(1), Some((held, angel, _))) if held == seq && angel.len() != pcm.len() => {
+                Err(format!("frames of seq {seq} have {} and {} samples", angel.len(), pcm.len()))
+            }
+            (Some(1), Some((held, angel, angel_text))) if held == seq => {
+                self.last = Some(seq);
+                Ok(Some(Pair { seq, frames: [angel, pcm], texts: [angel_text, text] }))
+            }
             (speaker, held) => Err(format!("chunk of speaker {speaker:?} with seq {seq} after {:?}", held.map(|h| h.0))),
         }
     }
@@ -70,6 +84,26 @@ mod tests {
         assert_eq!(pair.seq, 4);
         assert_eq!(pair.frames, [vec![0.1], vec![0.2]]);
         assert_eq!(pair.texts, ["a".to_string(), "d".to_string()]);
+    }
+
+    #[test]
+    fn frame_pairs_never_give_a_pair_twice_and_know_what_waits() {
+        let mut p = FramePairs::default();
+        assert!(!p.pending());
+        p.accept(Some(0), 3, vec![0.1], String::new()).unwrap();
+        assert!(p.pending());
+        assert!(p.accept(Some(1), 3, vec![0.2], String::new()).unwrap().is_some());
+        assert!(!p.pending());
+        assert!(p.accept(Some(0), 3, vec![0.1], String::new()).is_err(), "a duplicate pair");
+        assert!(p.accept(Some(0), 2, vec![0.1], String::new()).is_err(), "an older pair");
+        assert!(p.accept(Some(0), 4, vec![0.1], String::new()).is_ok());
+    }
+
+    #[test]
+    fn frame_pairs_refuse_frames_of_unequal_length() {
+        let mut p = FramePairs::default();
+        p.accept(Some(0), 0, vec![0.0; 3], String::new()).unwrap();
+        assert!(p.accept(Some(1), 0, vec![0.0; 2], String::new()).is_err());
     }
 
     #[test]
