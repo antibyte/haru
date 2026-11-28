@@ -4,9 +4,9 @@ import { arrowEnvelope, arrowPolygon, type ArrowGeom, type ArrowPair } from '../
 
 /** Dye per 60 Hz frame while an arrow builds up, and while it is held (keeps it readable against dissipation). */
 const BUILD_GAIN = 0.05;
-const HOLD_GAIN = 0.012;
+const HOLD_GAIN = 0.02;
 /** Velocity (grid cells/s) added per 60 Hz frame along the arrow, at three points of the shaft. */
-const PUSH = 24;
+const PUSH = 14;
 /** Edge swirl and outward push while an arrow dissolves (like the words' unravelling). */
 const SWIRL = 60;
 const SPREAD = 28;
