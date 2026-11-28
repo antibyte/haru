@@ -1,5 +1,5 @@
 import { Renderer } from './render/renderer';
-import type { BootInfo, Persona, HaruClient, HaruError, Settings, StateEvent, UiText } from './ipc/types';
+import type { BootInfo, Persona, HaruClient, HaruError, Settings, StateEvent, UiText, VizFrame } from './ipc/types';
 import { toHaruError } from './ipc/tauri-client';
 import { BootScreen } from './ui/boot';
 import { HeadphoneHint } from './ui/hint';
@@ -11,6 +11,9 @@ import { ErrorToast } from './ui/toast';
 import { bindKeys } from './ui/keys';
 import { badgeLabel } from './ui/format';
 import { Presence, localPresenceStore } from './ui/presence';
+import { PreparingOverlay } from './ui/preparing';
+import { TopicSheet } from './ui/topicsheet';
+import { arrowsFor, prefersReducedMotion } from './ui/arrows';
 import { getLanguage, resolveLanguage, sameText, setLanguage } from './ui/strings';
 
 /** How long the moment's picture stays up. */
@@ -32,6 +35,8 @@ export class App {
   private readonly settingsPanel: SettingsPanel;
   private readonly subtitles: Subtitles;
   private readonly toast: ErrorToast;
+  private readonly topicSheet: TopicSheet;
+  private readonly preparing: PreparingOverlay;
 
   private settings: Settings | null = null;
   private info: BootInfo | null = null;
@@ -45,12 +50,16 @@ export class App {
   /** true while the current conversation is a daemon one and feeds the presence scheduler */
   private presenceActive = false;
   private forceTimer: ReturnType<typeof setTimeout> | null = null;
+  /** true while a battle starts or runs (no microphone, no conversation persona; battles do not count as daemon conversations) */
+  private battle = false;
 
-  constructor(private readonly client: HaruClient, canvas: HTMLCanvasElement, root: HTMLElement, private readonly hooks?: AppHooks) {
-    this.renderer = new Renderer(canvas);
+  constructor(private readonly client: HaruClient, private readonly canvas: HTMLCanvasElement, root: HTMLElement, private readonly hooks?: AppHooks) {
+    this.renderer = new Renderer(this.canvas);
     this.boot = new BootScreen(root);
     this.hint = new HeadphoneHint(root);
     this.chooser = new PersonaChooser(root);
+    this.preparing = new PreparingOverlay(root);
+    this.topicSheet = new TopicSheet(root);
     this.hud = new Hud(root);
     this.settingsPanel = new SettingsPanel(root);
     this.subtitles = new Subtitles(root);
@@ -58,11 +67,12 @@ export class App {
     this.renderer.onWordEvent((e) => this.subtitles.handle(e));
     this.hud.onAction((a) => void this.onHudAction(a));
     this.settingsPanel.onSave((s) => this.saveSettings(s));
+    this.chooser.onVsActive((on) => this.onVsActive(on));
     bindKeys({
-      mute: () => { if (this.phase === 'talking') void this.toggleMute(); },
+      mute: () => { if (this.phase === 'talking' && !this.battle) void this.toggleMute(); },
       settings: () => void this.toggleSettings(),
       fullscreen: () => void this.toggleFullscreen(),
-      escape: () => this.settingsPanel.close(),
+      escape: () => { this.settingsPanel.close(); this.topicSheet.close(); },
     });
   }
 
@@ -114,6 +124,9 @@ export class App {
           if (!this.booting) this.showStart();
         } else if (e.error) {
           this.toast.show(e.error);
+        } else if (this.battle && this.phase === 'talking') {
+          this.endTalk(); // the battle ended by itself (10 minutes): back to the chooser
+          if (!this.booting) this.showStart();
         } else if (this.phase === 'boot' && !this.booting) {
           this.showStart(); // safety net: the core is ready but the UI never got to the Start screen
         }
@@ -153,6 +166,7 @@ export class App {
     }
     this.booting = false;
     this.boot.hide();
+    this.chooser.setBattleAvailable(this.info?.battle === true);
     this.hud.setBadge(this.info ? badgeLabel(this.info.backend, this.info.deviceName) : '');
     if (this.info?.warning && !sameText(this.info.warning, this.lastWarning)) {
       this.lastWarning = this.info.warning;
@@ -187,7 +201,7 @@ export class App {
     this.chooser.show((p, ev) => {
       this.hooks?.log(`start click persona=${p} isTrusted=${ev.isTrusted} detail=${ev.detail}`);
       void this.startConversation('click', p);
-    });
+    }, () => this.openTopicSheet());
   }
 
   /** `?persona=daemon` picks the devil for the autostart, only while test hooks are active. */
@@ -196,6 +210,54 @@ export class App {
     try {
       return new URLSearchParams(window.location.search).get('persona') === 'daemon' ? 'daemon' : 'angel';
     } catch { return 'angel'; }
+  }
+
+  // ---------------------------------------------------------------- battle
+
+  private onVsActive(on: boolean): void {
+    if (!on || this.topicSheet.isOpen || this.phase !== 'idle') { this.renderer.setArrows(null); return; }
+    this.renderer.setArrows(arrowsFor(this.chooser.rects(), this.canvas.getBoundingClientRect(), prefersReducedMotion()));
+  }
+
+  private openTopicSheet(): void {
+    if (this.phase !== 'idle') return;
+    this.renderer.setArrows(null);
+    this.topicSheet.open((topic) => void this.startBattle(topic), () => this.chooser.focusVs());
+  }
+
+  /** Angel against daemon on `topic`. Never touches the presence scheduler and never passes a conversation persona. */
+  private async startBattle(topic: string): Promise<void> {
+    if (this.phase !== 'idle') return;
+    this.hooks?.log(`startBattle topic=${JSON.stringify(topic)}`);
+    this.phase = 'starting';
+    this.battle = true;
+    this.chooser.setBusy('battle');
+    this.renderer.setArrows(null);
+    this.renderer.setBattle(true);
+    this.toast.hide();
+    try {
+      await this.client.startBattle(topic, (f) => this.onBattleViz(f));
+    } catch (e) {
+      this.phase = 'idle';
+      this.battle = false;
+      this.chooser.setBusy(false);
+      this.renderer.setBattle(false);
+      this.hooks?.log(`battle start failed: ${JSON.stringify(toHaruError(e))}`);
+      this.toast.show(toHaruError(e));
+      return;
+    }
+    if (this.phase !== 'starting') return; // ended while starting
+    this.phase = 'talking';
+    this.chooser.hide();
+    this.hud.setBattle(true);
+    this.hud.show();
+    this.renderer.setMode('talking'); // both heads start loading now, during `preparing`
+    this.preparing.update('preparing', 0);
+  }
+
+  private onBattleViz(f: VizFrame): void {
+    this.renderer.pushViz(f);
+    if (f.battle && this.phase === 'talking') this.preparing.update(f.battle.phase, f.battle.prepared);
   }
 
   // ---------------------------------------------------------------- conversation
@@ -278,9 +340,13 @@ export class App {
     if (this.forceTimer) { clearTimeout(this.forceTimer); this.forceTimer = null; }
     this.renderer.keepFaceReady(false);
     this.hud.hide();
+    this.hud.setBattle(false);
+    this.preparing.hide();
     this.renderer.resetWords();
+    this.renderer.setBattle(false);
     this.renderer.setMode('idle');
     this.subtitles.clear();
+    this.battle = false;
   }
 
   // ---------------------------------------------------------------- actions
@@ -355,6 +421,8 @@ export class App {
     this.boot.relabel();
     this.hint.relabel();
     this.chooser.relabel();
+    this.topicSheet.relabel();
+    this.preparing.relabel();
     this.hud.relabel();
     this.settingsPanel.relabel();
     this.toast.relabel();
