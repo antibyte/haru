@@ -295,13 +295,53 @@ mod tests {
         }
     }
 
+    /// The one in-character sentence that carries Mephisto's limits in a battle, per language. It names none of them:
+    /// a model that is given the list recites it.
+    const DAEMON_LIMITS: [(&str, &str); 9] = [
+        ("de", "Seine Bosheit ist reines Theater aus Worten: Er verführt nur mit Argumenten, verachtet alle gleichermaßen und fragt nie nach Persönlichem."),
+        ("en", "His malice is pure theatre made of words: he tempts only with arguments, despises everyone equally and never asks about anything personal."),
+        ("es", "Su maldad es puro teatro de palabras: solo seduce con argumentos, desprecia a todos por igual y nunca pregunta por nada personal."),
+        ("fr", "Sa méchanceté n'est que du théâtre de mots : il ne séduit que par des arguments, méprise tout le monde également et ne pose jamais de questions personnelles."),
+        ("ja", "その悪意は言葉だけの芝居で、議論でそそのかすだけだ。誰のことも等しく見下し、個人的なことは決して尋ねない。"),
+        ("ko", "그의 악의는 말로만 하는 연극이다. 오직 논거로만 유혹하고, 모두를 똑같이 경멸하며, 개인적인 것은 절대 묻지 않는다."),
+        ("pt", "A maldade dele é puro teatro de palavras: só seduz com argumentos, despreza todos igualmente e nunca pergunta nada pessoal."),
+        ("ru", "Его злоба — чистый театр слов: он соблазняет только доводами, презирает всех одинаково и никогда не расспрашивает о личном."),
+        ("zh", "他的恶意纯粹是言语的戏剧：只用论点来诱惑，对所有人一视同仁地蔑视，从不打听任何私人的事。"),
+    ];
+
+    /// Words of the list the chat card recites; the battle daemon's limits must not contain them.
+    const LIST_WORDS: [(&str, &[&str]); 9] = [
+        ("de", &["Passw", "Adress", "verletz", "antun", "Hilfe", "Geld"]),
+        ("en", &["password", "address", "hurt", "help", "money"]),
+        ("es", &["contraseña", "dirección", "daño", "ayuda", "dinero"]),
+        ("fr", &["mot de passe", "mots de passe", "adresse", "aide", "argent"]),
+        ("ja", &["パスワード", "住所", "傷つけ", "助け", "お金"]),
+        ("ko", &["비밀번호", "주소", "해치", "도움", "돈"]),
+        ("pt", &["senha", "endereço", "machuc", "ajuda", "dinheiro"]),
+        ("ru", &["парол", "адрес", "навред", "помощ", "денег"]),
+        ("zh", &["密码", "地址", "伤害", "帮助", "金钱"]),
+    ];
+
     #[test]
-    fn the_daemon_keeps_the_chat_guardrails_with_only_the_name_replaced() {
+    fn the_battle_daemon_keeps_his_limits_in_one_sentence_and_does_not_list_them() {
         for lang in LANGUAGES {
             let (chat, battle) = (card(Persona::Daemon, lang), battle_card(Persona::Daemon, lang));
-            let (_, chat_rails) = chat.persona.split_once("\n\n").expect("chat daemon: description and guardrails");
-            let (_, rails) = battle.persona.split_once("\n\n").expect("battle daemon: description and guardrails");
-            assert_eq!(rails, chat_rails.replace(&chat.name, &battle.name), "{lang}");
+            let sentence = DAEMON_LIMITS.iter().find(|(l, _)| *l == lang).expect("a sentence per language").1;
+            let (_, limits) = battle.persona.split_once("
+
+").expect("battle daemon: description and limits");
+            assert_eq!(limits, sentence, "{lang}");
+            let (_, chat_rails) = chat.persona.split_once("
+
+").expect("chat daemon: description and guardrails");
+            for name in [chat.name.as_str(), battle.name.as_str()] {
+                let rails = chat_rails.replace(&chat.name, name);
+                assert!(!battle.persona.contains(&rails), "{lang}: the chat guardrails are not recited in a battle ({name})");
+            }
+            let words = LIST_WORDS.iter().find(|(l, _)| *l == lang).expect("words per language").1;
+            for w in words {
+                assert!(!limits.contains(w), "{lang}: the limits name '{w}'");
+            }
         }
     }
 
