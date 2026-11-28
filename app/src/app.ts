@@ -125,7 +125,7 @@ export class App {
         } else if (e.error) {
           this.toast.show(e.error);
         } else if (this.battle && this.phase === 'talking') {
-          this.endTalk(); // the battle ended by itself (10 minutes): back to the chooser
+          this.endTalk(); // the battle ended by itself (20 minutes): back to the chooser
           if (!this.booting) this.showStart();
         } else if (this.phase === 'boot' && !this.booting) {
           this.showStart(); // safety net: the core is ready but the UI never got to the Start screen
@@ -374,7 +374,6 @@ export class App {
   }
 
   private async toggleSettings(): Promise<void> {
-    if (this.battle && !this.settingsPanel.isOpen) return; // no settings during a battle
     if (this.settingsPanel.isOpen) {
       this.settingsPanel.close();
       return;

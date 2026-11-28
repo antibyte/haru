@@ -53,12 +53,12 @@ export const LANGUAGES = ['de', 'en', 'es', 'fr', 'ja', 'ko', 'pt', 'ru', 'zh'] 
 export type Language = typeof LANGUAGES[number];
 export interface Settings {
   language: string; name: string; gender: 'female' | 'male' | null; backchannel: 'low' | 'mid' | 'high' | null;
-  speakFirst: boolean; temperature: number; topK: number; voicePath: string | null; inputDevice: string | null; outputDevice: string | null;
+  speakFirst: boolean; temperature: number; battleTemperature: number; topK: number; voicePath: string | null; inputDevice: string | null; outputDevice: string | null;
   backend: 'auto' | Backend; device: string; quality: Quality; subtitles: boolean; showFace: boolean; lagLimitSecs: number; headphoneHintSeen: boolean;
   echoCancellation: boolean;
 }
 export const DEFAULT_SETTINGS: Settings = { language: 'de', name: 'Haru', gender: null, backchannel: null, speakFirst: true,
-  temperature: 0.6, topK: 25, voicePath: null, inputDevice: null, outputDevice: null, backend: 'auto', device: 'auto', quality: 'auto',
+  temperature: 0.7, battleTemperature: 0.9, topK: 25, voicePath: null, inputDevice: null, outputDevice: null, backend: 'auto', device: 'auto', quality: 'auto',
   subtitles: false, showFace: true, lagLimitSecs: 1.0, headphoneHintSeen: false,
   echoCancellation: true };
 export interface SaveSettingsResult { settings: Settings; reloadRequired: boolean }

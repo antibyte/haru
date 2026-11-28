@@ -191,18 +191,15 @@ describe('battle session', () => {
     expect(c.calls).toContain('stop');
   });
 
-  it('the settings cannot be opened during a battle, but still in a conversation', async () => {
+  it('the settings open during a battle', async () => {
     const c = new StubClient();
     await started(c);
     await battle();
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 's' }));
     await flush();
-    expect(root.querySelector('.settings-drawer, .settings')!.classList.contains('is-visible')).toBe(false);
-    q<HTMLButtonElement>('.hud-stop').click();
-    await flush();
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: 's' }));
-    await flush();
     expect(root.querySelector('.settings-drawer, .settings')!.classList.contains('is-visible')).toBe(true);
+    expect(q('.hud-settings').hidden).toBe(false);
+    expect(q('.hud-fullscreen').hidden).toBe(false);
   });
 
   it('a refused start shows the message and returns to the chooser', async () => {

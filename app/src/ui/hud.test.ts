@@ -7,11 +7,11 @@ beforeEach(() => { document.body.innerHTML = '<div id="r"></div>'; root = docume
 const hidden = (sel: string) => root.querySelector<HTMLElement>(sel)!.hidden;
 
 describe('Hud in a battle', () => {
-  it('shows only Stop', () => {
+  it('hides only the mic group and Mute, keeping Settings, Fullscreen and Stop', () => {
     hud.setBattle(true);
     expect(root.querySelector('.hud')!.classList.contains('is-battle')).toBe(true);
-    expect(['.hud-left', '.hud-mute', '.hud-settings', '.hud-fullscreen'].map(hidden)).toEqual([true, true, true, true]);
-    expect(hidden('.hud-stop')).toBe(false);
+    expect(['.hud-left', '.hud-mute'].map(hidden)).toEqual([true, true]);
+    expect(['.hud-settings', '.hud-fullscreen', '.hud-stop'].map(hidden)).toEqual([false, false, false]);
   });
   it('leaving battle mode restores every control', () => {
     hud.setBattle(true); hud.setBattle(false);

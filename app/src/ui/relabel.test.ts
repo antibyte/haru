@@ -180,8 +180,9 @@ describe('relabel', () => {
     expect(quality.selectedOptions[0].textContent).toBe(en.quality.high);
     expect(input.options[0].textContent).toBe(en.settings.default);
     expect(backend.options[0].textContent).toBe(en.settings.auto);
-    expect(root.querySelectorAll('output')[0].textContent).toBe('0.60');
-    expect(root.querySelectorAll('output')[1].textContent).toBe('1.0 s');
+    expect(root.querySelectorAll('output')[0].textContent).toBe('0.70');
+    expect(root.querySelectorAll('output')[1].textContent).toBe('0.90');
+    expect(root.querySelectorAll('output')[2].textContent).toBe('1.0 s');
   });
 
   it('saving label follows language', async () => {

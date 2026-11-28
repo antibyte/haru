@@ -57,6 +57,8 @@ export class SettingsPanel {
   private readonly speakFirst = el('input');
   private readonly temperature = el('input');
   private readonly temperatureOut = el('output', 'num');
+  private readonly battleTemperature = el('input');
+  private readonly battleTemperatureOut = el('output', 'num');
   private readonly topK = el('input');
   private readonly voicePath = el('input');
   private readonly inputDevice = el('select');
@@ -96,6 +98,8 @@ export class SettingsPanel {
     this.echoCancellation.type = 'checkbox';
     this.temperature.type = 'range';
     Object.assign(this.temperature, { min: '0.3', max: '1', step: '0.05' });
+    this.battleTemperature.type = 'range';
+    Object.assign(this.battleTemperature, { min: '0.3', max: '1', step: '0.05' });
     this.topK.type = 'number';
     Object.assign(this.topK, { min: '1', max: '200', step: '1' });
     this.voicePath.type = 'text';
@@ -106,6 +110,7 @@ export class SettingsPanel {
 
     fillSelect(this.language, LANGUAGES.map((l) => [l, LANGUAGE_NAMES[l]]), getLanguage());
     this.temperature.addEventListener('input', () => this.syncRanges());
+    this.battleTemperature.addEventListener('input', () => this.syncRanges());
     this.lagLimit.addEventListener('input', () => this.syncRanges());
     this.backend.addEventListener('change', () => this.fillDevices(this.device.value));
 
@@ -118,6 +123,8 @@ export class SettingsPanel {
       this.toggle(() => S.settings.speakFirst, this.speakFirst),
       this.slider(() => S.settings.temperature, this.temperature, this.temperatureOut),
       this.note(() => S.settings.temperatureHint),
+      this.slider(() => S.settings.battleTemperature, this.battleTemperature, this.battleTemperatureOut),
+      this.note(() => S.settings.battleTemperatureHint),
       this.field(() => S.settings.topK, this.topK),
     ]);
     this.section(() => S.settings.sections.audio, [
@@ -171,6 +178,7 @@ export class SettingsPanel {
     this.name.value = s.name;
     this.speakFirst.checked = s.speakFirst;
     this.temperature.value = String(s.temperature);
+    this.battleTemperature.value = String(s.battleTemperature);
     this.topK.value = String(s.topK);
     this.voicePath.value = s.voicePath ?? '';
     this.echoCancellation.checked = s.echoCancellation;
@@ -234,6 +242,7 @@ export class SettingsPanel {
       backchannel: orNull(this.backchannel.value) as Settings['backchannel'],
       speakFirst: this.speakFirst.checked,
       temperature: clamp(num(this.temperature.value, base.temperature), 0.3, 1),
+      battleTemperature: clamp(num(this.battleTemperature.value, base.battleTemperature), 0.3, 1),
       topK: Math.round(clamp(num(this.topK.value, base.topK), 1, 200)),
       voicePath: orNull(this.voicePath.value.trim()),
       inputDevice: orNull(this.inputDevice.value),
@@ -279,8 +288,10 @@ export class SettingsPanel {
       input.style.setProperty('--p', `${((parseFloat(input.value) - lo) / (hi - lo)) * 100}%`);
     };
     paint(this.temperature);
+    paint(this.battleTemperature);
     paint(this.lagLimit);
     this.temperatureOut.textContent = formatNumber(parseFloat(this.temperature.value), 2);
+    this.battleTemperatureOut.textContent = formatNumber(parseFloat(this.battleTemperature.value), 2);
     this.lagLimitOut.textContent = `${formatNumber(parseFloat(this.lagLimit.value), 1)} ${S.settings.seconds}`;
   }
 

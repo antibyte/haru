@@ -122,13 +122,11 @@ export class Hud {
     this.muteLabel.textContent = m ? S.hud.muted : S.hud.mute;
     if (m) this.setMicLevel(0);
   }
-  /** Battle: only Stop (no microphone, so no mute, meter or latency); the window buttons stay in the title bar. */
+  /** Battle: no microphone, so no mute, meter or latency; Settings, Fullscreen and Stop stay. */
   setBattle(on: boolean): void {
     this.rootEl.classList.toggle('is-battle', on);
     this.left.hidden = on;
     this.muteBtn.hidden = on;
-    this.settingsBtn.hidden = on;
-    this.fullscreenBtn.hidden = on;
   }
 
 
