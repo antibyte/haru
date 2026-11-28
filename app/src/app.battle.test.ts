@@ -34,6 +34,8 @@ class StubClient implements HaruClient {
   personas: Persona[] = [];
   topics: string[] = [];
   onViz: ((f: VizFrame) => void) | null = null;
+  /** holds startBattle open until released (a start that is still pending) */
+  gate: Promise<void> | null = null;
   private stateCb: ((e: StateEvent) => void) | null = null;
   constructor(private readonly battle = true, private readonly refuse: HaruError | null = null) {}
   async getStatus(): Promise<StateEvent> { return READY; }
@@ -45,6 +47,7 @@ class StubClient implements HaruClient {
   async boot(): Promise<BootInfo> { return { backend: 'vulkan', device: 'Vulkan1', deviceName: 'B580', modelPath: 'x', plan: [], warning: null, battle: this.battle }; }
   async startConversation(p: Persona, onViz: (f: VizFrame) => void): Promise<void> { this.personas.push(p); this.onViz = onViz; }
   async startBattle(topic: string, onViz: (f: VizFrame) => void): Promise<void> {
+    if (this.gate) await this.gate;
     if (this.refuse) throw this.refuse;
     this.topics.push(topic); this.onViz = onViz;
   }
@@ -172,6 +175,34 @@ describe('battle session', () => {
     q<HTMLButtonElement>('.chooser-vs').click();
     expect(visible('.topic')).toBe(false);
     expect(c.topics).toEqual([]);
+  });
+
+  it('a battle the UI already left is stopped in the core when its start completes', async () => {
+    const c = new StubClient();
+    let release!: () => void;
+    c.gate = new Promise<void>((r) => { release = r; });
+    await started(c);
+    await battle();
+    c.emit({ state: 'error', backend: null, device: null, error: { code: 'worker', key: 'workerExited', message: 'x', detail: null }, warning: null });
+    await flush();
+    expect(c.calls).not.toContain('stop');
+    release();
+    await flush();
+    expect(c.calls).toContain('stop');
+  });
+
+  it('the settings cannot be opened during a battle, but still in a conversation', async () => {
+    const c = new StubClient();
+    await started(c);
+    await battle();
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 's' }));
+    await flush();
+    expect(root.querySelector('.settings-drawer, .settings')!.classList.contains('is-visible')).toBe(false);
+    q<HTMLButtonElement>('.hud-stop').click();
+    await flush();
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 's' }));
+    await flush();
+    expect(root.querySelector('.settings-drawer, .settings')!.classList.contains('is-visible')).toBe(true);
   });
 
   it('a refused start shows the message and returns to the chooser', async () => {

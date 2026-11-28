@@ -189,6 +189,7 @@ export class Renderer {
     cancelAnimationFrame(this.raf);
     this.arrows.dispose();
     this.battleFace?.dispose();
+    this.battleFace = null;
     for (const d of this.disposers.splice(0)) d();
   }
 

@@ -238,15 +238,16 @@ export class App {
     try {
       await this.client.startBattle(topic, (f) => this.onBattleViz(f));
     } catch (e) {
+      const ended = this.phase !== 'starting'; // the UI already left (its own toast was shown)
       this.phase = 'idle';
       this.battle = false;
       this.chooser.setBusy(false);
       this.renderer.setBattle(false);
       this.hooks?.log(`battle start failed: ${JSON.stringify(toHaruError(e))}`);
-      this.toast.show(toHaruError(e));
+      if (!ended) this.toast.show(toHaruError(e));
       return;
     }
-    if (this.phase !== 'starting') return; // ended while starting
+    if (this.phase !== 'starting') { void this.client.stopConversation(); return; } // ended while starting: stop the battle the core just started
     this.phase = 'talking';
     this.chooser.hide();
     this.hud.setBattle(true);
@@ -343,8 +344,8 @@ export class App {
     this.hud.setBattle(false);
     this.preparing.hide();
     this.renderer.resetWords();
-    this.renderer.setBattle(false);
     this.renderer.setMode('idle');
+    this.renderer.setBattle(false);
     this.subtitles.clear();
     this.battle = false;
   }
@@ -373,6 +374,7 @@ export class App {
   }
 
   private async toggleSettings(): Promise<void> {
+    if (this.battle && !this.settingsPanel.isOpen) return; // no settings during a battle
     if (this.settingsPanel.isOpen) {
       this.settingsPanel.close();
       return;
