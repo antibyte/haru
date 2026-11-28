@@ -214,6 +214,34 @@ impl Settings {
         }
     }
 
+    /// Options of a battle's two speakers, the angel's first: the battle cards with `topic`, Haru against Mephisto
+    /// whatever the own name, the angel's voice gender from the setting (female without one), the daemon male, the
+    /// cards' backchannels, and the sampling as a dialogue sends it. The battle's `max_frames` sets each
+    /// conversation's length, so `max_seconds` stays unset.
+    pub fn battle_options(&self, topic: &str) -> [DialogueOptions; 2] {
+        [Persona::Angel, Persona::Daemon].map(|p| {
+            let card = cards::battle_card(p, &self.language).render(topic);
+            let gender = match p {
+                Persona::Angel => self.gender.clone().unwrap_or(card.gender),
+                Persona::Daemon => card.gender,
+            };
+            DialogueOptions {
+                language: Some(self.language.clone()),
+                name: Some(card.name),
+                persona: Some(card.persona),
+                gender: Some(gender),
+                backchannel: Some(card.backchannel),
+                other_name: Some(card.other_name),
+                relationship: Some(card.relationship),
+                situation: Some(card.situation),
+                voice: self.voice_path.as_ref().map(|_| "user".to_string()),
+                temperature: Some(self.temperature),
+                top_k: (self.top_k != 25).then_some(self.top_k),
+                speak_first: Some(p == Persona::Angel),
+                ..Default::default()
+            }
+        })
+    }
     pub fn needs_reload(&self, new: &Settings) -> bool {
         self.backend != new.backend || self.device != new.device || self.voice_path != new.voice_path
     }
@@ -504,6 +532,44 @@ mod tests {
         assert_eq!(v["voice"], json!("user"));
     }
 
+    #[test]
+    fn battle_options_put_haru_against_mephisto() {
+        let [a, d] = Settings::default().battle_options("Ist eine Notlüge erlaubt?");
+        assert_eq!((a.language.as_deref(), d.language.as_deref()), (Some("de"), Some("de")));
+        assert_eq!((a.name.as_deref(), a.other_name.as_deref()), (Some("Haru"), Some("Mephisto")));
+        assert_eq!((d.name.as_deref(), d.other_name.as_deref()), (Some("Mephisto"), Some("Haru")));
+        assert_eq!((a.backchannel.as_deref(), d.backchannel.as_deref()), (Some("mid"), Some("low")));
+        assert_eq!((a.speak_first, d.speak_first), (Some(true), Some(false)));
+        assert_eq!((a.gender.as_deref(), d.gender.as_deref()), (Some("female"), Some("male")));
+        assert!(a.situation.as_deref().unwrap().ends_with("„Mephisto, Ist eine Notlüge erlaubt?“"));
+        assert!(d.situation.as_deref().unwrap().contains("„Ist eine Notlüge erlaubt?“"));
+        assert_eq!(d.persona.as_deref(), Some(cards::battle_card(Persona::Daemon, "de").persona.as_str()));
+    }
+
+    #[test]
+    fn battle_options_follow_gender_language_and_voice_but_not_the_own_name() {
+        let s = Settings { language: "ja".into(), gender: Some("male".into()), name: "Mara".into(), backchannel: Some("high".into()),
+            voice_path: Some("C:\\x\\v.wav".into()), ..Default::default() };
+        let [a, d] = s.battle_options("x");
+        assert_eq!((a.name.as_deref(), d.name.as_deref()), (Some("ハル"), Some("メフィスト")));
+        assert_eq!((a.gender.as_deref(), d.gender.as_deref()), (Some("male"), Some("male")));
+        assert_eq!((a.backchannel.as_deref(), d.backchannel.as_deref()), (Some("mid"), Some("low")));
+        assert_eq!((a.voice.as_deref(), d.voice.as_deref()), (Some("user"), Some("user")));
+        let female = Settings { gender: Some("female".into()), ..Default::default() }.battle_options("x");
+        assert_eq!((female[0].gender.as_deref(), female[1].gender.as_deref()), (Some("female"), Some("male")));
+    }
+
+    #[test]
+    fn battle_options_send_sampling_as_today_and_never_max_seconds() {
+        for s in [Settings::default(), Settings { temperature: 0.9, top_k: 40, ..Default::default() }] {
+            for o in s.battle_options("x") {
+                let v = serde_json::to_value(&o).unwrap();
+                assert_eq!(v["temperature"], json!(s.temperature));
+                assert_eq!(v.get("top_k").cloned(), (s.top_k != 25).then(|| json!(s.top_k)));
+                assert!(v.get("max_seconds").is_none() && v.get("seed").is_none() && v.get("sample_rate").is_none(), "{v}");
+            }
+        }
+    }
     #[test]
     fn needs_reload_on_backend_device_voice_only() {
         let a = Settings::default();
