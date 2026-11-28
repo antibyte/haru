@@ -23,6 +23,9 @@ export class Hud {
   private readonly segments: HTMLElement[] = [];
   private readonly muteBtn: HTMLButtonElement;
   private readonly muteLabel: HTMLElement;
+  private readonly left: HTMLElement;
+  private readonly settingsBtn: HTMLButtonElement;
+  private readonly fullscreenBtn: HTMLButtonElement;
   private readonly labels = new Labels();
   private muted = false;
   private cb: ((a: HudAction) => void) | null = null;
@@ -35,7 +38,7 @@ export class Hud {
 
   constructor(root: HTMLElement) {
     this.rootEl = el('section', 'hud');
-    const left = el('div', 'hud-left glass');
+    const left = (this.left = el('div', 'hud-left glass'));
     this.badge = el('span', 'hud-badge');
     this.badge.prepend(el('i', 'hud-dot'));
     this.badge.append(el('span', 'hud-badge-text'));
@@ -62,8 +65,8 @@ export class Hud {
     };
     [this.muteBtn, this.muteLabel] = mk('mute', () => (this.muted ? S.hud.muted : S.hud.mute), 'M');
     this.muteBtn.setAttribute('aria-pressed', 'false');
-    mk('settings', () => S.hud.settings, 'S');
-    mk('fullscreen', () => S.hud.fullscreen, 'F');
+    [this.settingsBtn] = mk('settings', () => S.hud.settings, 'S');
+    [this.fullscreenBtn] = mk('fullscreen', () => S.hud.fullscreen, 'F');
     mk('stop', () => S.hud.stop);
 
     this.rootEl.append(left, right);
@@ -119,6 +122,15 @@ export class Hud {
     this.muteLabel.textContent = m ? S.hud.muted : S.hud.mute;
     if (m) this.setMicLevel(0);
   }
+  /** Battle: only Stop (no microphone, so no mute, meter or latency); the window buttons stay in the title bar. */
+  setBattle(on: boolean): void {
+    this.rootEl.classList.toggle('is-battle', on);
+    this.left.hidden = on;
+    this.muteBtn.hidden = on;
+    this.settingsBtn.hidden = on;
+    this.fullscreenBtn.hidden = on;
+  }
+
 
   onAction(cb: (a: HudAction) => void): void { this.cb = cb; }
 

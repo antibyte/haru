@@ -290,6 +290,17 @@
 .topic-dice { width: 40px; height: 40px; display: grid; place-items: center; flex: none; }
 .topic-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
+/* ---------- battle: preparing ---------- */
+
+.preparing { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; pointer-events: none; }
+.overlay.preparing.is-visible > * { pointer-events: none; }
+.preparing-text {
+  margin: 0; font-size: clamp(15px, 1.6vw, 20px); font-weight: 200; letter-spacing: 0.06em; color: var(--ink-dim);
+  text-shadow: 0 2px 18px rgba(0, 0, 0, 0.8); animation: breathe 4.5s ease-in-out infinite;
+}
+.preparing-track { width: min(240px, 50vw); height: 1px; border-radius: 1px; background: rgba(255, 255, 255, 0.1); overflow: hidden; }
+.preparing-fill { height: 100%; width: 0; background: linear-gradient(90deg, var(--gold), #ff5a3c); box-shadow: 0 0 8px rgba(255, 170, 110, 0.7); transition: width 0.4s linear; }
+
 /* ---------- HUD ---------- */
 
 .hud {
@@ -329,6 +340,8 @@
 .hud-mute[aria-pressed='true'] { color: var(--danger); background: rgba(255, 107, 139, 0.1); box-shadow: 0 0 20px rgba(255, 107, 139, 0.18); }
 .hud-stop { color: #ffb0c4; }
 .hud-stop:hover { background: rgba(255, 95, 140, 0.18); color: #fff; box-shadow: 0 0 22px rgba(255, 95, 168, 0.3); }
+.hud [hidden] { display: none; }
+.hud.is-battle { justify-content: flex-end; }
 
 /* Narrow windows (min 800 px): keep both HUD groups on one row. */
 .hud-left, .hud-right { flex: 0 1 auto; min-width: 0; }
@@ -473,7 +486,7 @@
 /* ---------- reduced motion ---------- */
 
 @media (prefers-reduced-motion: reduce) {
-  .boot-mark, .hud-dot, .chooser.is-busy .persona.is-chosen, .chooser.is-busy .chooser-vs.is-chosen { animation: none; }
+  .boot-mark, .hud-dot, .preparing-text, .chooser.is-busy .persona.is-chosen, .chooser.is-busy .chooser-vs.is-chosen { animation: none; }
   .persona-img { transition: opacity 0.01s; }
   .persona:hover .persona-img, .persona:focus-visible .persona-img, .persona.is-chosen .persona-img { transform: none; }
   .chooser-vs-img { transition: opacity 0.01s, filter 0.01s; }
