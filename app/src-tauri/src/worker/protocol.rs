@@ -52,7 +52,12 @@ impl ClientMsg {
                 Value::Object(m)
             }
             ClientMsg::Battle { id, speakers, max_frames } => {
-                json!({"type":"battle","id":id,"speakers":speakers,"max_frames":max_frames})
+                // The worker refuses `max_seconds` on a battle speaker; the length is `max_frames`.
+                let mut sp = serde_json::to_value(speakers).expect("speakers serialize");
+                for s in sp.as_array_mut().expect("array") {
+                    s.as_object_mut().expect("object").remove("max_seconds");
+                }
+                json!({"type":"battle","id":id,"speakers":sp,"max_frames":max_frames})
             }
             ClientMsg::Chunk { id, seq, pcm } => json!({"type":"chunk","id":id,"seq":seq,"pcm":pcm}),
             ClientMsg::HangUp { id } => json!({"type":"hang_up","id":id}),
@@ -322,9 +327,19 @@ mod tests {
     }
 
     #[test]
+    fn a_battle_speaker_never_carries_max_seconds() {
+        let sp = DialogueOptions { max_seconds: Some(30.0), ..Default::default() };
+        let m = ClientMsg::Battle { id: "b".into(), speakers: [sp.clone(), sp], max_frames: 10 };
+        let j = line_json(&m);
+        for s in j["speakers"].as_array().unwrap() {
+            assert!(s.get("max_seconds").is_none(), "{s}");
+        }
+    }
+
+    #[test]
     fn a_battle_error_never_asks_for_another_backend() {
         let b = |c: &str| WorkerErrorBody { code: c.into(), option: Some("max_frames".into()), message: "speaker 1: no room".into() };
-        for code in ["out_of_memory", "out_of_range", "invalid_argument", "device"] {
+        for code in ["out_of_memory", "out_of_range", "invalid_argument", "device", "internal"] {
             let e = battle_error(&b(code));
             assert_eq!(e.key, MsgKey::WorkerError);
             assert!(!e.backend_failure, "{code}");
