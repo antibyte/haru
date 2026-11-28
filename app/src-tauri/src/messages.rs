@@ -82,6 +82,8 @@ msg_keys! {
     SegmentRenewed => "Neuer Gesprächsabschnitt – Haru fängt frisch an.",
     AecUnavailable => "Echounterdrückung nicht verfügbar – bitte Kopfhörer verwenden.",
     AecFailed => "Echounterdrückung ausgefallen – bitte Kopfhörer verwenden.",
+    BattleUnsupported => "Der geladene Sprachmodell-Worker kann kein Streitgespräch zwischen Engel und Dämon führen; dafür braucht es einen neueren Worker.",
+    BattleTopic => "Bitte ein Thema für das Streitgespräch angeben.",
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -139,7 +141,15 @@ mod tests {
     fn all_keys_are_unique() {
         let set: HashSet<String> = MsgKey::ALL.iter().map(|k| serde_json::to_string(k).unwrap()).collect();
         assert_eq!(set.len(), MsgKey::ALL.len());
-        assert_eq!(MsgKey::ALL.len(), 62);
+        assert_eq!(MsgKey::ALL.len(), 64);
+    }
+
+    #[test]
+    fn battle_messages_have_german_texts() {
+        assert_eq!(serde_json::to_value(MsgKey::BattleUnsupported).unwrap(), "battleUnsupported");
+        assert_eq!(serde_json::to_value(MsgKey::BattleTopic).unwrap(), "battleTopic");
+        assert_eq!(UiText::new(MsgKey::BattleTopic).message, "Bitte ein Thema für das Streitgespräch angeben.");
+        assert!(MsgKey::BattleUnsupported.german().contains("Streitgespräch"));
     }
 
     #[test]
