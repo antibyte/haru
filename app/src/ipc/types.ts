@@ -78,6 +78,8 @@ export interface HaruClient {
   backendOptions(): Promise<BackendOptions>;
   boot(onDownload: (e: DownloadEvent) => void): Promise<BootInfo>;
   startConversation(persona: Persona, onViz: (f: VizFrame) => void): Promise<void>;
+  /** A battle on `topic` (angel against daemon, no microphone); `stopConversation` ends it too. */
+  startBattle(topic: string, onViz: (f: VizFrame) => void): Promise<void>;
   stopConversation(): Promise<void>;
   setMuted(muted: boolean): Promise<void>;
   playCue(): Promise<void>;

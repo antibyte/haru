@@ -1,11 +1,13 @@
 import { de } from '../ui/locales/de';
 import {
   DEFAULT_SETTINGS,
-  type AudioDevices, type BackendOptions, type BootInfo, type DownloadEvent, type HaruClient, type HaruError, type MessageKey,
-  type Persona, type SaveSettingsResult, type Settings, type StateEvent, type VizFrame, type WordPiece,
+  type AudioDevices, type BackendOptions, type BattlePhase, type BootInfo, type DownloadEvent, type HaruClient, type HaruError,
+  type Levels, type MessageKey, type Persona, type SaveSettingsResult, type Settings, type Speaker, type StateEvent, type VizFrame,
+  type WordPiece,
 } from './types';
 
-export interface MockOptions { lang: 'de' | 'en' | 'ja'; fail?: 'boot' | 'lag'; slow?: boolean }
+export type MockLang = 'de' | 'en' | 'ja';
+export interface MockOptions { lang: MockLang; fail?: 'boot' | 'lag'; slow?: boolean; noBattle?: boolean }
 
 export const MOCK_TOTAL_BYTES = 6_623_102_720;
 const FRAME_HZ = 7.5;
@@ -30,6 +32,72 @@ export function slowLatency(tSec: number): number {
   return 300 + 600 * (p <= 1 ? p : 2 - p);
 }
 
+const BATTLE_START_MS = 600;
+const PREPARE_MS = 3000;
+const PAUSE_MS = 2500;
+/** ?mock=lag in a battle: the buffer runs dry after this much playing. */
+const LAG_EVERY_MS = 12000;
+const TURN_GAP_FRAMES = 3;
+
+/** One 133 ms frame of a battle: each voice's text piece ('' = silent). */
+export interface BattleFrame { angel: string; daemon: string }
+interface Turn { who: Speaker; pieces: string[]; aside?: { at: number; pieces: string[] } }
+
+const OPENER: Record<MockLang, string[]> = { de: [' Me', 'phis', 'to', ','], en: [' Me', 'phis', 'to', ','], ja: ['メフィ', 'スト', '、'] };
+
+/** The scripted dialogue after Haru's opener ("Mephisto, {topic}"); the aside is a short interjection that must not cut. */
+const BATTLE_TURNS: Record<MockLang, Turn[]> = {
+  de: [
+    { who: 'daemon', pieces: [' Na', ' klar', '.', ' Wer', ' fragt', ',', ' hat', ' schon', ' ver', 'lo', 'ren', '.'] },
+    { who: 'angel', pieces: [' Das', ' glau', 'be', ' ich', ' nicht', '.', ' Ehr', 'lich', 'keit', ' macht', ' frei', '.'], aside: { at: 6, pieces: [' Pah', '.'] } },
+    { who: 'daemon', pieces: [' Frei', 'heit', ' ist', ' ein', ' Lu', 'xus', ' für', ' En', 'gel', '.'] },
+    { who: 'angel', pieces: [' Und', ' für', ' dich', ' ein', ' Fremd', 'wort', '!'] },
+    { who: 'daemon', pieces: [' Ha', 'ha', '!', ' Du', ' lernst', ' da', 'zu', '.'] },
+  ],
+  en: [
+    { who: 'daemon', pieces: [' Of', ' course', '.', ' Who', ' asks', ' has', ' al', 'read', 'y', ' lost', '.'] },
+    { who: 'angel', pieces: [' I', ' don’t', ' be', 'lieve', ' that', '.', ' Hon', 'est', 'y', ' sets', ' you', ' free', '.'], aside: { at: 6, pieces: [' Hah', '.'] } },
+    { who: 'daemon', pieces: [' Free', 'dom', ' is', ' a', ' lux', 'ury', ' for', ' an', 'gels', '.'] },
+    { who: 'angel', pieces: [' And', ' a', ' for', 'eign', ' word', ' to', ' you', '!'] },
+    { who: 'daemon', pieces: [' Ha', 'ha', '!', ' You', '’re', ' learn', 'ing', '.'] },
+  ],
+  ja: [
+    { who: 'daemon', pieces: ['もちろん', 'さ', '。', '聞く', '時点で', '負け', 'だ', '。'] },
+    { who: 'angel', pieces: ['そうは', '思い', 'ません', '。', '正直', 'さは', '人を', '自由に', 'します', '。'], aside: { at: 4, pieces: ['ふん', '。'] } },
+    { who: 'daemon', pieces: ['自由', 'なんて', '天使の', 'ぜいたく', 'だ', '。'] },
+    { who: 'angel', pieces: ['あなたには', '縁の', 'ない', '言葉', 'ですね', '！'] },
+    { who: 'daemon', pieces: ['はは', '！', '少しは', '分かって', 'きた', 'な', '。'] },
+  ],
+};
+
+function topicPieces(topic: string, lang: MockLang): string[] {
+  const t = topic.trim();
+  if (lang === 'ja') {
+    const chars = [...t];
+    const out: string[] = [];
+    for (let i = 0; i < chars.length; i += 3) out.push(chars.slice(i, i + 3).join(''));
+    return out;
+  }
+  return t.split(/\s+/).map((w) => ` ${w}`);
+}
+
+/** The battle's frames: Haru opens with "Mephisto, {topic}", the turns alternate, short gaps between turns, a long one at the end. */
+export function battleTimeline(lang: MockLang, topic: string): BattleFrame[] {
+  const turns: Turn[] = [{ who: 'angel', pieces: [...OPENER[lang], ...topicPieces(topic, lang)] }, ...BATTLE_TURNS[lang]];
+  const out: BattleFrame[] = [];
+  for (const t of turns) {
+    t.pieces.forEach((p, i) => {
+      const a = t.aside && i >= t.aside.at && i < t.aside.at + t.aside.pieces.length ? t.aside.pieces[i - t.aside.at] : '';
+      out.push(t.who === 'angel' ? { angel: p, daemon: a } : { angel: a, daemon: p });
+    });
+    for (let k = 0; k < TURN_GAP_FRAMES; k++) out.push({ angel: '', daemon: '' });
+  }
+  for (let k = 0; k < GAP_FRAMES; k++) out.push({ angel: '', daemon: '' });
+  return out;
+}
+
+const SILENT_FRAME: BattleFrame = { angel: '', daemon: '' };
+
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const clamp01 = (x: number) => Math.min(1, Math.max(0, x));
 
@@ -42,6 +110,12 @@ function bandsFor(n: number, peak: number, amp: number, jitter: number): number[
   return out;
 }
 
+function levelsFor(text: string, t: number, offset: number): Levels {
+  if (text.trim() === '') return { rms: 0.01, bands: new Array<number>(16).fill(0) };
+  const rms = 0.12 + 0.1 * Math.abs(Math.sin(2 * Math.PI * (1.3 * t + offset)));
+  return { rms, bands: bandsFor(16, 0.5 + 0.45 * Math.sin(2 * Math.PI * (0.35 * t + offset)), rms * 3.2, 0.02) };
+}
+
 /** Scripted client for browser development: boot/download, a looping conversation, in-memory settings. */
 export class MockClient implements HaruClient {
   private state: StateEvent = { state: 'booting', backend: null, device: null, error: null, warning: null };
@@ -52,6 +126,9 @@ export class MockClient implements HaruClient {
   private _lastPersona: Persona | null = null;
   /** The persona of the last startConversation call (for tests). */
   get lastPersona(): Persona | null { return this._lastPersona; }
+  private _lastTopic: string | null = null;
+  /** The topic of the last startBattle call (for tests). */
+  get lastTopic(): string | null { return this._lastTopic; }
   private timer: ReturnType<typeof setInterval> | null = null;
   private readonly timeline: string[];
 
@@ -106,7 +183,7 @@ export class MockClient implements HaruClient {
       backend: 'vulkan', device: 'Vulkan1', deviceName: 'Intel(R) Arc(TM) B580 Graphics',
       modelPath: 'C:\\mock\\Haru-4B-Q8_0.gguf',
       plan: [{ backend: 'vulkan', device: 'Vulkan1', description: 'Intel(R) Arc(TM) B580 Graphics' }],
-      warning: null, battle: true,
+      warning: null, battle: !this.options.noBattle,
     };
     if (this.state.state === 'ready') return info;
     this.emit({ state: 'booting', backend: null, device: null, error: null, warning: null });
@@ -183,6 +260,49 @@ export class MockClient implements HaruClient {
         this.emit({ ...this.state, state: 'ready', error: this.err('lagLimit', 'lagLimit') });
       }, LAG_AFTER_MS);
     }
+  }
+
+  /** Mock battle: preparing for 3 s, then the script; ?mock=lag pauses every 12 s of playing for 2.5 s. */
+  async startBattle(topic: string, onViz: (f: VizFrame) => void): Promise<void> {
+    this._lastTopic = topic;
+    if (this.state.state !== 'ready') throw this.err('busy', 'busy');
+    if (this.options.noBattle) throw this.err('worker', 'battleUnsupported');
+    if (topic.trim() === '') throw this.err('settings', 'battleTopic');
+    this.stopTimer();
+    await sleep(BATTLE_START_MS);
+    if (this.state.state !== 'ready') throw this.err('busy', 'busy');
+    const timeline = battleTimeline(this.options.lang, topic);
+    let phase: BattlePhase = 'preparing';
+    let phaseAt = performance.now();
+    let lastAt = phaseAt;
+    let playedMs = 0;
+    let lastFrame = -1;
+    this.timer = setInterval(() => {
+      const now = performance.now();
+      if (phase === 'playing') playedMs += now - lastAt;
+      lastAt = now;
+      const inPhase = now - phaseAt;
+      if (phase === 'preparing' && inPhase >= PREPARE_MS) { phase = 'playing'; phaseAt = now; }
+      else if (phase === 'paused' && inPhase >= PAUSE_MS) { phase = 'playing'; phaseAt = now; }
+      else if (phase === 'playing' && this.options.fail === 'lag' && inPhase >= LAG_EVERY_MS) { phase = 'paused'; phaseAt = now; }
+      const t = playedMs / 1000;
+      const cur = phase === 'playing' ? Math.floor(t * FRAME_HZ) : lastFrame;
+      const words: WordPiece[] = [];
+      for (let n = lastFrame + 1; n <= cur; n++) {
+        const fr = timeline[n % timeline.length];
+        words.push({ seq: n, text: fr.angel, speaker: 'angel' }, { seq: n, text: fr.daemon, speaker: 'daemon' });
+      }
+      lastFrame = cur;
+      const fr = phase === 'playing' && cur >= 0 ? timeline[cur % timeline.length] : SILENT_FRAME;
+      const angel = levelsFor(fr.angel, t, 0);
+      const daemon = levelsFor(fr.daemon, t, 0.5);
+      const prepared = phase === 'playing' ? 1 : Math.min(1, (now - phaseAt) / (phase === 'preparing' ? PREPARE_MS : PAUSE_MS));
+      onViz({
+        t, model: angel.rms >= daemon.rms ? angel : daemon, mic: { rms: 0, bands: new Array<number>(8).fill(0) }, latencyMs: 0, words,
+        battle: { angel, daemon, phase, prepared },
+      });
+    }, 1000 / 60);
+    this.emit({ ...this.state, state: 'talking', error: null });
   }
 
   async stopConversation(): Promise<void> {
