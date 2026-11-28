@@ -13,7 +13,7 @@ import { badgeLabel } from './ui/format';
 import { Presence, localPresenceStore } from './ui/presence';
 import { PreparingOverlay } from './ui/preparing';
 import { TopicSheet } from './ui/topicsheet';
-import { arrowsFor, prefersReducedMotion } from './ui/arrows';
+import { arrowsFor } from './ui/arrows';
 import { getLanguage, resolveLanguage, sameText, setLanguage } from './ui/strings';
 
 /** How long the moment's picture stays up. */
@@ -216,7 +216,7 @@ export class App {
 
   private onVsActive(on: boolean): void {
     if (!on || this.topicSheet.isOpen || this.phase !== 'idle') { this.renderer.setArrows(null); return; }
-    this.renderer.setArrows(arrowsFor(this.chooser.rects(), this.canvas.getBoundingClientRect(), prefersReducedMotion()));
+    this.renderer.setArrows(arrowsFor(this.chooser.rects(), this.canvas.getBoundingClientRect()));
   }
 
   private openTopicSheet(): void {

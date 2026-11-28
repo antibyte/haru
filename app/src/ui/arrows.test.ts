@@ -55,15 +55,14 @@ describe('arrows', () => {
     expect(arrowPolygon(p.angel.from, p.angel.to, p.angel.width).every((q) => Number.isFinite(q[0]) && Number.isFinite(q[1]))).toBe(true);
   });
 
-  it('reduced motion gives no arrows', () => {
-    expect(arrowsFor(WIDE, CANVAS, true)).toBeNull();
-    expect(arrowsFor(WIDE, CANVAS, false)).not.toBeNull();
+  it('arrows are given whatever the motion preference is', () => {
+    expect(arrowsFor(WIDE, CANVAS)).not.toBeNull();
   });
 
   it('no arrows without rects, with an empty canvas or an empty VS', () => {
-    expect(arrowsFor(null, CANVAS, false)).toBeNull();
-    expect(arrowsFor(WIDE, r(0, 0, 0, 0), false)).toBeNull();
-    expect(arrowsFor({ ...WIDE, vs: r(0, 0, 0, 0) }, CANVAS, false)).toBeNull();
+    expect(arrowsFor(null, CANVAS)).toBeNull();
+    expect(arrowsFor(WIDE, r(0, 0, 0, 0))).toBeNull();
+    expect(arrowsFor({ ...WIDE, vs: r(0, 0, 0, 0) }, CANVAS)).toBeNull();
   });
 
   it('arrowPolygon: tip at `to`, symmetric about the axis, head wider than the shaft', () => {

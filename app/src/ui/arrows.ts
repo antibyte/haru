@@ -51,9 +51,9 @@ export function arrowGeometry(r: VsRects, canvas: RectLike): ArrowPair {
   return { angel: one(r.angel), daemon: one(r.daemon), canvasW: canvas.width, canvasH: canvas.height };
 }
 
-/** The arrows for the current layout, or null (reduced motion, nothing laid out yet). */
-export function arrowsFor(r: VsRects | null, canvas: RectLike, reducedMotion: boolean): ArrowPair | null {
-  if (reducedMotion || !r || canvas.width <= 0 || canvas.height <= 0 || r.vs.width <= 0 || r.vs.height <= 0) return null;
+/** The arrows for the current layout, or null (nothing laid out yet). */
+export function arrowsFor(r: VsRects | null, canvas: RectLike): ArrowPair | null {
+  if (!r || canvas.width <= 0 || canvas.height <= 0 || r.vs.width <= 0 || r.vs.height <= 0) return null;
   return arrowGeometry(r, canvas);
 }
 
@@ -76,9 +76,4 @@ export function arrowPolygon(from: Pt, to: Pt, width: number): Pt[] {
 export function arrowEnvelope(env: number, active: boolean, dtMs: number): number {
   const k = Math.max(0, dtMs);
   return active ? Math.min(1, env + k / ARROW_BUILD_MS) : Math.max(0, env - k / ARROW_FADE_MS);
-}
-
-/** prefers-reduced-motion; false where matchMedia does not exist (jsdom). */
-export function prefersReducedMotion(): boolean {
-  return typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 }
