@@ -32,9 +32,11 @@ export class ArrowInk {
 
   /** New arrows (they build up), or null (the current ones dissolve). */
   set(pair: ArrowPair | null): void {
-    if (!pair) { this.active = false; return; }
+    if (!pair || typeof OffscreenCanvas === 'undefined') { this.active = false; return; }
     this.release();
-    this.masks = [this.build(pair.angel, pair, GOLD), this.build(pair.daemon, pair, RED)];
+    const masks = [this.build(pair.angel, pair, GOLD), this.build(pair.daemon, pair, RED)];
+    if (masks.some((m) => !m)) { for (const m of masks) if (m) this.gl.deleteTexture(m.tex); this.active = false; return; }
+    this.masks = masks as ArrowMask[];
     this.active = true;
   }
 
@@ -64,7 +66,7 @@ export class ArrowInk {
     this.masks = [];
   }
 
-  private build(a: ArrowGeom, pair: ArrowPair, color: RGB): ArrowMask {
+  private build(a: ArrowGeom, pair: ArrowPair, color: RGB): ArrowMask | null {
     const poly = arrowPolygon(a.from, a.to, a.width);
     let x0 = Infinity; let y0 = Infinity; let x1 = -Infinity; let y1 = -Infinity;
     for (const [x, y] of poly) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
@@ -77,7 +79,8 @@ export class ArrowInk {
     const c = (this.canvas ??= new OffscreenCanvas(8, 8));
     c.width = w;
     c.height = h;
-    const ctx = c.getContext('2d', { willReadFrequently: true })!;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    if (!ctx) { this.active = false; return null; }
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, w, h);

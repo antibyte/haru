@@ -187,6 +187,8 @@ export class Renderer {
   stop(): void {
     this.running = false;
     cancelAnimationFrame(this.raf);
+    this.arrows.dispose();
+    this.battleFace?.dispose();
     for (const d of this.disposers.splice(0)) d();
   }
 
@@ -288,7 +290,7 @@ export class Renderer {
    * Returns false when the daemon head is not loaded (nothing is shown then).
    */
   startMoment(ms: number): boolean {
-    if (this.noPost || !this.face.momentReady) return false;
+    if (this.battle || this.noPost || !this.face.momentReady) return false; // a battle never runs this effect
     this.momentLeft = Math.max(1, ms);
     return true;
   }
@@ -327,7 +329,17 @@ export class Renderer {
    * shot shows one of them. Off: back to the single conversation face.
    */
   setBattle(on: boolean): void {
-    if (!on) { this.battle = null; return; }
+    if (!on) {
+      if (this.battle) {
+        const now = performance.now();
+        for (const a of Object.values(this.battle.words)) { this.dispatchWords(a.flush(), now); a.reset(); }
+      }
+      this.battle = null;
+      this.setPersona(null); // face, palette, ember and injector back to the neutral start-screen state
+      return;
+    }
+    this.momentLeft = 0;
+    this.face.endMoment();
     if (!this.battleFace) {
       this.battleFace = new FaceLayer(this.glc, undefined, TEXTURED_HEADS, null);
       this.battleFace.setGender(this.faceGender);
