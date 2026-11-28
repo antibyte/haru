@@ -196,6 +196,7 @@ pub fn battle_topic(raw: &str) -> Option<String> {
     let t: String = raw.trim().chars().take(TOPIC_MAX_CHARS).collect();
     (!t.is_empty()).then_some(t)
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -329,4 +330,15 @@ mod tests {
     fn unknown_language_falls_back_to_the_german_battle_cards() {
         assert_eq!(battle_card(Persona::Angel, "xx"), battle_card(Persona::Angel, "de"));
         assert_eq!(battle_card(Persona::Daemon, "xx"), battle_card(Persona::Daemon, "de"));
-    }}
+    }
+
+    #[test]
+    fn render_inserts_the_topic_literally() {
+        let topic = r#"a {topic} "q" {x}"#;
+        for p in [Persona::Angel, Persona::Daemon] {
+            let c = battle_card(p, "de").render(topic);
+            assert!(c.situation.contains(&format!("„{topic}“")), "{p:?}");
+            assert_eq!(c.situation.matches(topic).count(), battle_card(p, "de").situation.matches("{topic}").count(), "{p:?}");
+        }
+    }
+}

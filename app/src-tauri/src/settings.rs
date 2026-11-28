@@ -242,6 +242,7 @@ impl Settings {
             }
         })
     }
+
     pub fn needs_reload(&self, new: &Settings) -> bool {
         self.backend != new.backend || self.device != new.device || self.voice_path != new.voice_path
     }
@@ -570,6 +571,7 @@ mod tests {
             }
         }
     }
+
     #[test]
     fn needs_reload_on_backend_device_voice_only() {
         let a = Settings::default();
