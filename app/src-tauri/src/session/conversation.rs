@@ -593,7 +593,7 @@ fn dispatch_loop(
     while !inner.stop.load(Ordering::Acquire) {
         let wait = if got_first { TICK * 3 } else { first_deadline.saturating_duration_since(Instant::now()).min(Duration::from_millis(50)) };
         match events.recv_timeout(wait) {
-            Ok(WorkerMsg::Chunk { id, seq, pcm, text }) if id == rid => {
+            Ok(WorkerMsg::Chunk { id, seq, pcm, text, .. }) if id == rid => {
                 let mut pcm = match decode_f32(&pcm) {
                     Ok(p) if p.len() == FRAME_SAMPLES => p,
                     Ok(p) => {
@@ -1246,7 +1246,7 @@ mod tests {
     }
 
     fn frame(id: &str, seq: u64) -> WorkerMsg {
-        WorkerMsg::Chunk { id: id.into(), seq, pcm: encode_f32(&vec![0.0; FRAME_SAMPLES]), text: Some("x".into()) }
+        WorkerMsg::Chunk { id: id.into(), seq, pcm: encode_f32(&vec![0.0; FRAME_SAMPLES]), text: Some("x".into()), speaker: None }
     }
 
     fn segment_limit(id: &str) -> WorkerMsg {
@@ -1448,7 +1448,7 @@ mod tests {
         let tap = Arc::new(Mutex::new(Vec::new()));
         for seq in 0..2u64 {
             let pcm = input[seq as usize * FRAME_SAMPLES..(seq as usize + 1) * FRAME_SAMPLES].to_vec();
-            fx.worker.send(WorkerMsg::Chunk { id: "c1".into(), seq, pcm: encode_f32(&pcm), text: Some("x".into()) }).unwrap();
+            fx.worker.send(WorkerMsg::Chunk { id: "c1".into(), seq, pcm: encode_f32(&pcm), text: Some("x".into()), speaker: None }).unwrap();
         }
         let settings = Settings { lag_limit_secs: 10.0, ..Default::default() };
         let io = ConversationIo { push_tap: Some(tap.clone()), ..test_io() };

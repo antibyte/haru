@@ -30,6 +30,8 @@ pub struct DialogueOptions {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ClientMsg {
     Dialogue { id: String, sample_rate: u32, options: DialogueOptions },
+    /// Two conversations of the model that hear each other; `speakers[0]` is the angel, `speakers[1]` the daemon.
+    Battle { id: String, speakers: [DialogueOptions; 2], max_frames: u32 },
     Chunk { id: String, seq: u64, pcm: String },
     HangUp { id: String },
     Cancel { id: String },
@@ -48,6 +50,9 @@ impl ClientMsg {
                     for (k, val) in o { m.insert(k, val); }
                 }
                 Value::Object(m)
+            }
+            ClientMsg::Battle { id, speakers, max_frames } => {
+                json!({"type":"battle","id":id,"speakers":speakers,"max_frames":max_frames})
             }
             ClientMsg::Chunk { id, seq, pcm } => json!({"type":"chunk","id":id,"seq":seq,"pcm":pcm}),
             ClientMsg::HangUp { id } => json!({"type":"hang_up","id":id}),
@@ -73,8 +78,16 @@ pub struct ModelInfo {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Ready {
     pub protocol: u32, pub version: String,
+    /// Requests added since protocol 4 began that this worker serves (worker.md "Start").
+    #[serde(default)] pub features: Vec<String>,
     #[serde(default)] pub defaults: serde_json::Value,
     pub model: ModelInfo,
+}
+
+impl Ready {
+    pub fn supports_battle(&self) -> bool {
+        self.features.iter().any(|f| f == "battle")
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -82,7 +95,7 @@ pub struct Ready {
 pub enum WorkerMsg {
     Ready(Ready),
     Fatal { error: WorkerErrorBody },
-    Chunk { id: String, seq: u64, pcm: String, #[serde(default)] text: Option<String> },
+    Chunk { id: String, seq: u64, pcm: String, #[serde(default)] text: Option<String>, #[serde(default)] speaker: Option<u8> },
     Progress { id: String, done: f64 },
     End { id: String, #[serde(default)] frames: Option<u64>, #[serde(default)] samples: Option<u64> },
     Error { #[serde(default)] id: Option<String>, error: WorkerErrorBody },
@@ -114,6 +127,14 @@ pub fn worker_error(body: &WorkerErrorBody) -> HaruError {
     if let Some(o) = &body.option { detail.push_str(&format!(" (option {o})")); }
     let e = HaruError::new(ErrorCode::Worker, MsgKey::WorkerError).with_detail(detail);
     if matches!(body.code.as_str(), "device" | "out_of_memory" | "internal") { e.backend_failure() } else { e }
+}
+
+/// A battle's refusal or failure, `out_of_memory` included: the worker still serves normal conversations, so the
+/// app never moves to another backend for it.
+pub fn battle_error(body: &WorkerErrorBody) -> HaruError {
+    let mut e = worker_error(body);
+    e.backend_failure = false;
+    e
 }
 
 /// The worker ended a request because `max_seconds` ran out (haru-engine.cpp: `OutOfRange` on option `max_seconds`).
@@ -210,14 +231,18 @@ mod tests {
     fn reads_ready_chunk_and_end_of_a_worker_with_battle() {
         let ready = r#"{"type":"ready","protocol":4,"version":"0.11.1","features":["battle"],"defaults":{},"model":{"name":"Haru-4B","task":"dialogue","sample_rate":24000,"frame_samples":3200,"device":"Vulkan1","weight_type":"Q8_0","options":[]}}"#;
         match parse_line(ready).unwrap() {
-            WorkerMsg::Ready(r) => assert!(check_ready(&r).is_ok()),
+            WorkerMsg::Ready(r) => {
+                assert!(check_ready(&r).is_ok());
+                assert!(r.supports_battle());
+            }
             o => panic!("{o:?}"),
         }
         match parse_line(r#"{"type":"chunk","id":"b","seq":7,"speaker":1,"pcm":"AAA=","text":"ja"}"#).unwrap() {
-            WorkerMsg::Chunk { id, seq, text, .. } => {
+            WorkerMsg::Chunk { id, seq, text, speaker, .. } => {
                 assert_eq!(id, "b");
                 assert_eq!(seq, 7);
                 assert_eq!(text.as_deref(), Some("ja"));
+                assert_eq!(speaker, Some(1));
             }
             o => panic!("{o:?}"),
         }
@@ -269,8 +294,46 @@ mod tests {
         assert_eq!(parse_line(r#"{"type":"nope"}"#).unwrap_err().code, ErrorCode::Worker);
     }
 
+    #[test]
+    fn a_dialogue_chunk_has_no_speaker() {
+        match parse_line(r#"{"type":"chunk","id":"d","seq":1,"pcm":"AAA=","text":""}"#).unwrap() {
+            WorkerMsg::Chunk { speaker, .. } => assert_eq!(speaker, None),
+            o => panic!("{o:?}"),
+        }
+    }
+
+    #[test]
+    fn an_old_worker_without_features_cannot_battle() {
+        let r = ready(4, "dialogue");
+        assert!(!r.supports_battle());
+        let parsed = parse_line(r#"{"type":"ready","protocol":4,"version":"0.11.0","defaults":{},"model":{"name":"Haru-4B","task":"dialogue","sample_rate":24000,"frame_samples":3200}}"#).unwrap();
+        assert!(matches!(parsed, WorkerMsg::Ready(r) if r.features.is_empty() && !r.supports_battle()));
+    }
+
+    #[test]
+    fn serializes_battle_with_two_speakers_and_max_frames() {
+        let angel = DialogueOptions { name: Some("Haru".into()), other_name: Some("Mephisto".into()), speak_first: Some(true), ..Default::default() };
+        let daemon = DialogueOptions { name: Some("Mephisto".into()), other_name: Some("Haru".into()), speak_first: Some(false), seed: Some(7), ..Default::default() };
+        let m = ClientMsg::Battle { id: "b1".into(), speakers: [angel, daemon], max_frames: 4500 };
+        assert_eq!(
+            line_json(&m),
+            v(r#"{"type":"battle","id":"b1","speakers":[{"name":"Haru","other_name":"Mephisto","speak_first":true},{"name":"Mephisto","other_name":"Haru","speak_first":false,"seed":7}],"max_frames":4500}"#)
+        );
+    }
+
+    #[test]
+    fn a_battle_error_never_asks_for_another_backend() {
+        let b = |c: &str| WorkerErrorBody { code: c.into(), option: Some("max_frames".into()), message: "speaker 1: no room".into() };
+        for code in ["out_of_memory", "out_of_range", "invalid_argument", "device"] {
+            let e = battle_error(&b(code));
+            assert_eq!(e.key, MsgKey::WorkerError);
+            assert!(!e.backend_failure, "{code}");
+            assert!(e.detail.as_deref().unwrap().contains(code));
+        }
+    }
+
     fn ready(protocol: u32, task: &str) -> Ready {
-        Ready { protocol, version: "0.11.1".into(), defaults: Value::Null,
+        Ready { protocol, version: "0.11.1".into(), features: Vec::new(), defaults: Value::Null,
             model: ModelInfo { name: "Haru-4B".into(), task: task.into(), sample_rate: 24000, frame_samples: Some(3200), device: None, weight_type: None } }
     }
 
