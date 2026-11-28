@@ -1,5 +1,6 @@
 //! Core: state machine, boot/start/stop/mute, backend fallback (Task 1.8).
 
+pub mod battle;
 pub mod battle_buffer;
 pub mod budget;
 pub mod conversation;
