@@ -14,6 +14,7 @@ Haru runs locally: the app starts the `speech worker` from [speech.cpp](https://
 - **Audio coupling:** Haru's loudness drives swirls and splats, and the spectral centroid drives the hue. Your microphone paints cool splats from the bottom edge while Haru listens.
 - **Automatic backend selection** (CUDA, Vulkan, CPU) with the choice shown in the HUD, resumable model download, adaptive render quality, optional subtitles.
 - **Language:** One setting controls the UI and the conversation. On first start, Haru takes over the operating system's language. Supported are German, English, Español, Français, 日本語, 한국어, Português, Русский and 中文 (Simplified Chinese). Details under [Language](#language).
+- **Duel mode (Angel vs. Demon):** Haru and Mephisto argue with each other about a topic while you watch and listen. No microphone is needed. Details under [Duel: Angel vs. Demon](#duel-angel-vs-demon).
 
 Screenshots:
 
@@ -21,12 +22,16 @@ Screenshots:
 |---|---|---|---|
 | ![Model download on first start](docs/screenshots/m5-boot.png) | ![Persona choice: angel or demon](docs/screenshots/m5-chooser.png) | ![Conversation with the demon](docs/screenshots/m5-talking-demon.png) | ![Conversation in Japanese](docs/screenshots/m5-ja.png) |
 
+| Duel: start screen | Haru speaks | Mephisto answers |
+|---|---|---|
+| ![Start screen with the VS emblem and the hover arrows](docs/screenshots/m6-duel-chooser.png) | ![Haru speaking in a duel](docs/screenshots/m6-duel-haru.png) | ![Mephisto answering](docs/screenshots/m6-duel-mephisto.png) |
+
 ## Requirements
 
 **To use it (installer):**
 
 - Windows 10 or 11, 64-bit
-- A GPU with **Vulkan 1.3**, or an **NVIDIA GPU with CUDA** (CUDA driver installed), with at least **8 GB** of graphics memory
+- A GPU with **Vulkan 1.3**, or an **NVIDIA GPU with CUDA** (CUDA driver installed), with at least **8 GB** of graphics memory (a duel needs about 1.2 GB more, see [Duel](#duel-angel-vs-demon))
 - Headphones or speakers (headphones sound best)
 - About **7 GB** of free disk space for the model
 
@@ -93,7 +98,7 @@ The installer replaces the `backends` folder of an existing installation, so swi
 
 | Key | Function |
 |---|---|
-| **M** | Mute the microphone (applies to the current and following conversations, not saved) |
+| **M** | Mute the microphone (applies to the current and following conversations, not saved; ignored during a duel, which has no microphone) |
 | **S** | Open settings |
 | **F** | Toggle fullscreen |
 
@@ -110,7 +115,8 @@ Saved as `settings.json` in the app's config folder (on Windows: `%APPDATA%\dev.
 | `gender` | `null` | `"female"` or `"male"` |
 | `backchannel` | `null` | Interjections: `"low"`, `"mid"`, `"high"`. `null` = value of the official card (`mid`) |
 | `speakFirst` | `true` | Haru starts the conversation |
-| `temperature` | `0.6` | Creativity, 0.3 to 1.0 (higher: Haru talks more and listens less) |
+| `temperature` | `0.7` | Creativity in conversations, 0.3 to 1.0 (higher: Haru talks more and listens less). A settings file from an older version that still holds exactly `0.6` is moved to `0.7` once. |
+| `battleTemperature` | `0.8` | Creativity in duels, 0.3 to 1.0 (the slider "Temperature in duels"). Applies from the next duel. |
 | `topK` | `25` | Top-k sampling, 0 to 500 |
 | `voicePath` | `null` | Optional WAV file for the voice |
 | `inputDevice` | `null` | Microphone (`null` = default device) |
@@ -122,11 +128,11 @@ Saved as `settings.json` in the app's config folder (on Windows: `%APPDATA%\dev.
 | `lagLimitSecs` | `1.0` | Lag limit in seconds, 0.5 to 10 |
 | `echoCancellation` | `true` | Echo cancellation (remove Haru's voice from the microphone). Takes effect from the next conversation; `false` sends the microphone signal unchanged to the model. If the key is missing in an old `settings.json`, `true` applies. |
 
-Changes to `backend`, `device` or `voicePath` reload the model.
+Changes to `backend`, `device` or `voicePath` reload the model. Settings that need a reload are refused during a duel, as during a conversation.
 
 ### Language
 
-The `language` setting controls the entire UI (start screen, notices, settings, error messages) and the language Haru speaks (character card and conversation).
+The `language` setting controls the entire UI (start screen, notices, settings, error messages) and the language Haru speaks (character card and conversation). A duel uses the selected language for both cards and for the suggested topics; in Japanese the names are written ハル and メフィスト.
 
 Supported are German (`de`), English (`en`), Español (`es`), Français (`fr`), 日本語 (`ja`), 한국어 (`ko`), Português (`pt`), Русский (`ru`) and 中文 (`zh`, Simplified Chinese).
 
@@ -136,11 +142,11 @@ Supported are German (`de`), English (`en`), Español (`es`), Français (`fr`), 
 
 ### Character Card
 
-Haru uses the card of the selected persona (see [Personas: Angel and Demon](#personas-angel-and-demon)). A custom name or a custom backchannel value overrides the card. A custom name also replaces "Haru" in the card texts.
+Haru uses the card of the selected persona (see [Personas: Angel and Demon](#personas-angel-and-demon)); in a duel, each persona uses its separate duel card (see [Duel](#duel-angel-vs-demon)). A custom name or a custom backchannel value overrides the card. A custom name also replaces "Haru" in the card texts.
 
 ### Conversation Segments
 
-The memory of the model (KV cache) grows with every second of conversation. Before each segment, Haru reads the device's free memory and picks the length: (free memory − 512 MiB for GPU, or 1 GiB for CPU) / 500 kB per second, limited to 120 to 3600 s. On Windows, the free GPU memory comes from the system-wide GPU memory counter (DXGI + PDH); otherwise it comes from the device list of speech.cpp. When a segment ends, Haru automatically starts afresh (without reloading the model), a notice briefly appears at the top, and Haru responds again after one to two seconds. Haru then no longer knows what was said in the previous segment. `HARU_MAX_SECONDS` sets a fixed segment length (for testing only).
+The memory of the model (KV cache) grows with every second of conversation. Before each segment, Haru reads the device's free memory and picks the length: (free memory − 512 MiB for GPU, or 1 GiB for CPU) / 500 kB per second, limited to 120 to 3600 s. On Windows, the free GPU memory comes from the system-wide GPU memory counter (DXGI + PDH); otherwise it comes from the device list of speech.cpp. When a segment ends, Haru automatically starts afresh (without reloading the model), a notice briefly appears at the top, and Haru responds again after one to two seconds. Haru then no longer knows what was said in the previous segment. `HARU_MAX_SECONDS` sets a fixed segment length (for testing only). A duel has no segments: it ends after at most 20 minutes, and nothing renews it.
 
 ### Render Quality
 
@@ -166,7 +172,7 @@ Sequence of the model-first controller:
 
 ## Personas: Angel and Demon
 
-At start, you choose who Haru is: the angel on the left, the demon on the right. Click, Enter or Space starts the conversation; the arrow keys move the focus.
+At start, you choose who Haru is: the angel on the left, the demon on the right. Click, Enter or Space starts the conversation; the arrow keys move the focus. The VS emblem between the two starts a duel instead (see [Duel: Angel vs. Demon](#duel-angel-vs-demon)).
 
 - **Start screen:** The figures are stored as WebP with alpha in `app/public/personas/` (`angel.webp`, `devil.webp`). Prompts and originals are in `assets/personas/<angel|devil>/` (generated with the image tool of the Codex CLI). `scripts/export-personas.py` downsizes them for the app.
 - **Character cards:** Each persona has its own card in all 9 languages, embedded from `app/src-tauri/assets/persona-cards/<persona>/<lang>.json`. The official cards in `assets/haru-cards/` remain in the repo as a reference; the app no longer uses them. The free-text "Persona" field is removed.
@@ -177,6 +183,31 @@ At start, you choose who Haru is: the angel on the left, the demon on the right.
 - **Ember palette:** For the demon, the orbiter and the word ink switch to embers (black-red → crimson → orange → amber). The microphone ink stays cool.
 - **Demon voice:** The `DemonVoice` filter (`app/src-tauri/src/audio/voice_fx.rs`) lowers the voice by about 9 semitones (formants −2), mixes in a quiet sub-octave, adds subtle saturation (no growl) and an FDN basement reverb. It adds about 64 ms of latency. A male base voice is forced for the demon. The filter runs before playback, so that echo cancellation sees exactly the signal you hear.
 - **A/B comparison:** `HARU_VOICE_FX=off` disables the filter. Offline, on a WAV file: `cargo run --example voice_fx --manifest-path app/src-tauri/Cargo.toml -- in.wav out.wav`.
+
+## Duel: Angel vs. Demon
+
+In a duel, the angel Haru and the demon Mephisto argue with each other about a topic. There is no microphone: you watch and listen. In Japanese the names are written ハル and メフィスト.
+
+### Usage
+
+- **Start:** On the start screen, an ornate "VS" emblem sits between the two figures, with the caption "Angel vs. Demon – Haru and Mephisto argue about a topic". Hovering or focusing it lights up both figures, and two arrows form in the ink, pointing at the two heads. Clicking it opens the topic field.
+- **Topic:** The field is prefilled with a random suggestion from 12 curated topics per language: philosophical questions about good and evil, some humorous or sarcastic, e.g. "Does the end justify the means?" or "Is Monday morning proof that the devil exists?". The dice button shows another suggestion. You can also type your own topic (up to 120 characters). Enter or **Start** begins the duel.
+- **During the duel:** "Haru and Mephisto are getting ready…" shows while the first seconds are computed. Haru opens, and Mephisto answers. Subtitles, if enabled, are gold for Haru and red for Mephisto, and start a new line at each speaker change.
+- **HUD:** Settings, Fullscreen and Hang up. There is no mute button, because there is no microphone.
+- **End:** A duel runs until you hang up, at most 20 minutes.
+
+### How it works
+
+- **Shot and reverse shot:** The fog shows the speaker. The shown head switches about 0.7 s after the other voice clearly takes over, and the heads dissolve into each other in 0.6 s. The ink palette changes with the speaker: gold for Haru, red for Mephisto.
+- **Voices:** Mephisto's voice uses the same demon voice filter as demon conversations.
+- **Lockstep:** Both conversations run on the one loaded Haru-4B model, inside one speech worker process. The worker's `battle` request comes from the local speech.cpp patch `patches/speech.cpp/0001-worker-battle-request.patch`, which the build applies (see [Build from Source](#build-from-source)). The two conversations are stepped in lockstep, 133 ms per frame, and each hears the other's voice from the frame before. The worker's `ready` message lists `"features":["battle"]`; an older worker disables the VS with a hint.
+- **Adaptive pre-buffer:** The app measures how fast the GPU computes both voices and waits until enough is buffered: at most 20 s, starting at 3 s. If the GPU is slower than real time, playback pauses briefly in the fog and then resumes. A duel is never aborted for speed.
+- **Speed (measured):** On an Intel Arc B580 (Vulkan, Q8_0), one double frame takes 127 ms on average (p50 107 ms) against the 133 ms budget, so duels run about in real time.
+- **Cards:** Each persona has a separate duel card in all 9 languages (`app/src-tauri/assets/persona-cards/battle/<angel|daemon>/<lang>.json`). In duels, Mephisto keeps his limits: his malice is pure theatre of words, with no real harm, no hate against groups and no questions about personal matters. These limits are stated in one in-character sentence instead of the chat card's rule list, because the model tended to read rule lists aloud.
+
+### Memory
+
+At the start, the key/value caches of both conversations are reserved for 20 minutes, about 1.2 GB on top of the 6.6 GB model. On 8 GB cards, a duel may not fit and ends with a memory error. Normal conversations are unaffected.
 
 ## Backend Selection
 
@@ -400,3 +431,6 @@ Read in `app/src-tauri/src/test_hooks.rs`. Without these variables, the app beha
 - **Echo cancellation:** Checked synthetically (attenuation, double-talk, real-time simulation). The practical test with speakers is still pending and is up to the user. Noise suppression and automatic gain control change what the model hears (as in the browser).
 - **Model behavior with synthetic voices:** With an artificial voice (e.g. a SAPI test file), answers come out short and sometimes incoherent. This is due to the model, not to compute time.
 - **Platforms:** Measured only on Windows 11 with an Intel Arc B580. Linux and macOS are set up only as portability targets. iGPU and CPU are not sufficient for real time.
+- **Duel behavior:** The small speech model sometimes introduces itself, repeats lines from its card, narrates instead of talking, drifts off topic, or slips into podcast or show-host phrases.
+- **Duel texts:** The duel texts in languages other than German and English have not been reviewed by native speakers.
+- **Duel memory:** On 8 GB cards, a duel may not fit and ends with a memory error (see [Memory](#memory) in the Duel section).

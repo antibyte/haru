@@ -1,6 +1,15 @@
 <!-- Template for the release text. .github/workflows/release.yml replaces {{VERSION}} and appends GitHub's automatically generated changes. -->
 **Haru** is a desktop app for a real-time conversation with the speech model Haru-4B: you speak into the microphone, Haru answers with voice, and every word appears as glowing ink in a fluid simulation. Everything runs locally with [speech.cpp](https://github.com/nyosegawa/speech.cpp).
 
+## New in this version
+
+- **Duel mode:** The angel Haru and the demon Mephisto argue with each other about a topic while you watch and listen. There is no microphone in a duel.
+- **Start a duel:** Click the VS emblem between the two figures on the start screen, then pick a suggested topic or type your own (up to 120 characters).
+- **Temperature:** New slider "Temperature in duels" (default 0.8). The default for conversations is now 0.7 (was 0.6).
+- **Settings during a duel:** Open Settings from the HUD while a duel runs. Settings that need a model reload are refused during a duel.
+- **Up to 20 minutes:** A duel runs until you hang up, for at most 20 minutes.
+- **Mephisto keeps his limits:** In a duel, Mephisto stays within his limits without reciting them.
+
 ## Download
 
 | System | File | Backends |
@@ -19,6 +28,7 @@ The regular installer works for every graphics card, including NVIDIA. The CUDA 
 - **GPU with at least 8 GB of graphics memory** (Vulkan 1.3 or NVIDIA with CUDA). Without a suitable GPU, Haru runs on the CPU, far slower than real time. On a Mac the GPU shares system memory, where 16 GB is advisable.
 - **Model download on first start: 6.6 GB** (about 7 GB of free space). An interrupted download resumes on the next start.
 - Headphones sound best.
+- A duel holds two conversations at once and needs about 1.2 GB more graphics memory; on 8 GB cards it may not fit.
 
 ## Installers are not signed
 
