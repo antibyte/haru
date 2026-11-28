@@ -29,8 +29,9 @@ use crate::worker::pcm::decode_f32;
 use crate::worker::process::WorkerSender;
 use crate::worker::protocol::{battle_error, worker_error, ClientMsg, DialogueOptions, WorkerMsg};
 
-/// Frames each speaker gives at most: 10 minutes.
-pub const MAX_FRAMES: u32 = 4500;
+/// Frames each speaker gives at most: 20 minutes (9000 frames of 133.33 ms). The worker allocates both speakers' KV
+/// caches up front, about 64 KB per frame: roughly 0.58 GB per conversation and 1.15 GB for the two.
+pub const MAX_FRAMES: u32 = 9000;
 /// Output rate of the virtual (no-playback) sink.
 const VIRTUAL_RATE: u32 = 48000;
 /// Unstarted frames kept in the ring while playing: one more than the device gate's prebuffer, so it never starves.
@@ -741,7 +742,7 @@ mod tests {
         queue(&fx, &angel, &daemon, 2, true);
         let run = start(fx.events, fx.sender.clone()).expect("start");
         let line = next_line(&fx.lines, |v| v["type"] == "battle");
-        assert_eq!((line["id"].clone(), line["max_frames"].clone()), (json!("b1"), json!(4500)));
+        assert_eq!((line["id"].clone(), line["max_frames"].clone()), (json!("b1"), json!(MAX_FRAMES)));
         assert!(line.get("sample_rate").is_none() && line.get("seed").is_none());
         let speakers = line["speakers"].as_array().unwrap();
         assert_eq!((speakers[0]["name"].clone(), speakers[1]["name"].clone()), (json!("Haru"), json!("Mephisto")));
