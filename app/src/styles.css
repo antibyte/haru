@@ -169,7 +169,7 @@
 }
 /* Equal-height boxes, bottom aligned, so both heads sit at about the same height. */
 .chooser-row {
-  --row-h: min(74vh, 37vw);
+  --row-h: min(74vh, 37vw); position: relative;
   margin-top: auto; height: var(--row-h); width: 100%;
   display: flex; align-items: flex-end; justify-content: center; pointer-events: none;
 }
@@ -205,6 +205,47 @@
 .chooser.is-busy .persona.is-chosen { animation: persona-pulse 1.6s ease-in-out infinite; }
 .chooser.is-busy .persona.is-chosen .persona-label { color: var(--ink-dim); }
 
+/* VS emblem: placed by JS (placeVs) on the seam between the images; out of the flex flow */
+.chooser-vs {
+  transform: translate(-50%, -50%); appearance: none; background: none; border: 0; padding: 0; margin: 0;
+  cursor: pointer; outline: none; pointer-events: auto; z-index: 1; display: block; border-radius: 50%;
+}
+.chooser-vs::before { /* soft dark halo: keeps the emblem legible over bright ink */
+  content: ''; position: absolute; inset: -16%; border-radius: 50%; pointer-events: none;
+  background: radial-gradient(closest-side, rgba(0, 0, 0, 0.78), rgba(0, 0, 0, 0.5) 55%, rgba(0, 0, 0, 0) 100%);
+}
+.chooser-vs-img {
+  position: relative; display: block; width: 100%; height: 100%; object-fit: contain; -webkit-user-drag: none; user-select: none;
+  opacity: 0.9; filter: drop-shadow(0 0 0 rgba(255, 190, 110, 0));
+  transition: transform 0.5s var(--ease), opacity 0.5s var(--ease), filter 0.5s var(--ease);
+}
+.chooser-vs:hover .chooser-vs-img, .chooser-vs:focus-visible .chooser-vs-img, .chooser-vs.is-chosen .chooser-vs-img {
+  opacity: 1; transform: scale(1.06);
+  filter: drop-shadow(0 0 16px rgba(255, 196, 120, 0.7)) drop-shadow(0 0 36px rgba(255, 70, 30, 0.4));
+}
+.chooser-vs-caption {
+  position: absolute; left: 50%; top: 100%; width: max-content; max-width: 26ch; transform: translate(-50%, 2px);
+  text-align: center; pointer-events: none; opacity: 0; transition: opacity 0.4s var(--ease); text-shadow: 0 2px 14px rgba(0, 0, 0, 0.85);
+}
+.chooser-vs-label { display: block; font-size: clamp(12px, 1.1vw, 15px); font-weight: 300; letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink); }
+.chooser-vs-sub, .chooser-vs-hint { display: block; font-size: 11.5px; letter-spacing: 0.03em; color: var(--ink-dim); }
+.chooser-vs-hint { display: none; }
+.chooser-vs:hover .chooser-vs-caption, .chooser-vs:focus-visible .chooser-vs-caption, .chooser-vs.is-chosen .chooser-vs-caption { opacity: 1; }
+.chooser-vs:focus-visible .chooser-vs-label { text-decoration: underline; text-decoration-color: rgba(255, 196, 120, 0.8); text-underline-offset: 6px; text-decoration-thickness: 1px; }
+.chooser-vs.is-unavailable { cursor: default; }
+.chooser-vs.is-unavailable .chooser-vs-img { opacity: 0.32; filter: grayscale(0.7); transform: none; }
+.chooser-vs.is-unavailable .chooser-vs-caption { opacity: 1; }
+.chooser-vs.is-unavailable .chooser-vs-label, .chooser-vs.is-unavailable .chooser-vs-sub { display: none; }
+.chooser-vs.is-unavailable .chooser-vs-hint { display: block; }
+.chooser-vs:disabled { cursor: default; }
+/* hovering the VS lights both images as on their own hover; neither dims */
+.chooser-row:has(.chooser-vs:not(.is-unavailable):hover) .persona-img,
+.chooser-row:has(.chooser-vs:not(.is-unavailable):focus-visible) .persona-img {
+  opacity: 1; transform: translateY(-1.5%) scale(1.03); filter: saturate(1) drop-shadow(0 0 28px rgba(var(--glow), 0.6));
+}
+.chooser.is-busy .chooser-vs:not(.is-chosen) { opacity: 0.15; }
+.chooser.is-busy .chooser-vs.is-chosen { animation: persona-pulse 1.6s ease-in-out infinite; }
+
 @keyframes persona-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.7; }
@@ -221,6 +262,9 @@
   .persona[data-persona='angel'] { aspect-ratio: auto; }
   .persona[data-persona='daemon'] { aspect-ratio: auto; }
   .persona-img { height: 100%; }
+  .persona[data-persona='angel'] .persona-label { bottom: calc(5.2% + var(--vs-lift, 0px)); }
+  .persona[data-persona='angel'] .persona-sub { bottom: calc(2% + var(--vs-lift, 0px)); }
+  .chooser-vs-caption { left: 100%; top: 50%; transform: translate(8px, -50%); text-align: left; }
 }
 
 /* ---------- HUD ---------- */
@@ -402,9 +446,12 @@
 /* ---------- reduced motion ---------- */
 
 @media (prefers-reduced-motion: reduce) {
-  .boot-mark, .hud-dot, .chooser.is-busy .persona.is-chosen { animation: none; }
+  .boot-mark, .hud-dot, .chooser.is-busy .persona.is-chosen, .chooser.is-busy .chooser-vs.is-chosen { animation: none; }
   .persona-img { transition: opacity 0.01s; }
   .persona:hover .persona-img, .persona:focus-visible .persona-img, .persona.is-chosen .persona-img { transform: none; }
+  .chooser-vs-img { transition: opacity 0.01s, filter 0.01s; }
+  .chooser-vs:hover .chooser-vs-img, .chooser-vs:focus-visible .chooser-vs-img, .chooser-vs.is-chosen .chooser-vs-img,
+  .chooser-row:has(.chooser-vs:hover) .persona-img, .chooser-row:has(.chooser-vs:focus-visible) .persona-img { transform: none; }
   .overlay, .hud, .toast, .settings-drawer, .hint-card { transition-duration: 0.01s; }
 }
 
