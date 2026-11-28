@@ -137,6 +137,8 @@ export const en: Strings = {
     segmentRenewed: 'New conversation segment – Haru starts afresh.',
     aecUnavailable: 'Echo cancellation unavailable – please use headphones.',
     aecFailed: 'Echo cancellation stopped working – please use headphones.',
+    battleUnsupported: 'The speech model worker does not support “Angel vs. Demon”. Please update Haru.',
+    battleTopic: 'Please enter a topic.',
     // frontend only
     unexpected: 'Unexpected error.',
   },

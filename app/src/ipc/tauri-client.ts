@@ -74,6 +74,9 @@ export class TauriClient implements HaruClient {
   startConversation(persona: Persona, onViz: (f: VizFrame) => void): Promise<void> {
     return call('start_conversation', { persona, onViz: channel(onViz) });
   }
+  startBattle(topic: string, onViz: (f: VizFrame) => void): Promise<void> {
+    return call('start_battle', { topic, onViz: channel(onViz) });
+  }
   stopConversation(): Promise<void> { return call('stop_conversation'); }
   setMuted(muted: boolean): Promise<void> { return call('set_muted', { muted }); }
   playCue(): Promise<void> { return call('play_cue'); }

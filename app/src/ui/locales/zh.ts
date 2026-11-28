@@ -137,6 +137,8 @@ export const zh: Strings = {
     segmentRenewed: '开始新的对话段落，Haru 将从头开始。',
     aecUnavailable: '回声消除不可用，请使用耳机。',
     aecFailed: '回声消除已失效，请使用耳机。',
+    battleUnsupported: '语音模型进程不支持“天使 vs. 恶魔”。请更新 Haru。',
+    battleTopic: '请输入一个话题。',
     // frontend only
     unexpected: '意外错误。',
   },

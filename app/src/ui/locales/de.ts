@@ -72,6 +72,8 @@ const messages = {
   segmentRenewed: 'Neuer Gesprächsabschnitt – Haru fängt frisch an.',
   aecUnavailable: 'Echounterdrückung nicht verfügbar – bitte Kopfhörer verwenden.',
   aecFailed: 'Echounterdrückung ausgefallen – bitte Kopfhörer verwenden.',
+  battleUnsupported: 'Der geladene Sprachmodell-Worker kann kein Streitgespräch zwischen Engel und Dämon führen; dafür braucht es einen neueren Worker.',
+  battleTopic: 'Bitte ein Thema für das Streitgespräch angeben.',
   // frontend only
   unexpected: 'Unerwarteter Fehler.',
 } as const satisfies Record<MessageKey | 'unexpected', string>;

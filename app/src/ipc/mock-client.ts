@@ -106,7 +106,7 @@ export class MockClient implements HaruClient {
       backend: 'vulkan', device: 'Vulkan1', deviceName: 'Intel(R) Arc(TM) B580 Graphics',
       modelPath: 'C:\\mock\\Haru-4B-Q8_0.gguf',
       plan: [{ backend: 'vulkan', device: 'Vulkan1', description: 'Intel(R) Arc(TM) B580 Graphics' }],
-      warning: null,
+      warning: null, battle: true,
     };
     if (this.state.state === 'ready') return info;
     this.emit({ state: 'booting', backend: null, device: null, error: null, warning: null });

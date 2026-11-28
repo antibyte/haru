@@ -137,6 +137,8 @@ export const pt: Strings = {
     segmentRenewed: 'Nova etapa da conversa: Haru recomeça do zero.',
     aecUnavailable: 'Cancelamento de eco indisponível. Use fones de ouvido.',
     aecFailed: 'O cancelamento de eco parou de funcionar. Use fones de ouvido.',
+    battleUnsupported: 'O processo do modelo de voz não oferece suporte a “Anjo vs. Demônio”. Atualize o Haru.',
+    battleTopic: 'Digite um tema.',
     // frontend only
     unexpected: 'Erro inesperado.',
   },

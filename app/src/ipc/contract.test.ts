@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import fixtures from './contract.fixtures.json';
 import { DEFAULT_SETTINGS, MESSAGE_KEYS } from './types';
 import { TauriClient, toHaruError } from './tauri-client';
-import type { DownloadEvent, HaruError, Persona, Settings, StateEvent, VizFrame } from './types';
+import type { DownloadEvent, HaruError, Persona, Settings, StateEvent, VizFrame, WordPiece } from './types';
 import { errorText, setLanguage, uiText } from '../ui/strings';
 
 const invoke = vi.hoisted(() => vi.fn(async () => undefined));
@@ -50,7 +50,7 @@ describe('IPC contract fixtures', () => {
 
   it('MESSAGE_KEYS equals fixtures.messageKeys (Rust MsgKey::ALL, same order)', () => {
     expect([...MESSAGE_KEYS]).toEqual(fixtures.messageKeys);
-    expect(MESSAGE_KEYS).toHaveLength(62);
+    expect(MESSAGE_KEYS).toHaveLength(64);
   });
 
   it('download events match DownloadEvent', () => {
@@ -88,6 +88,22 @@ describe('IPC contract fixtures', () => {
   it('settingsDefault no longer has a persona field', () => {
     expect('persona' in fixtures.settingsDefault).toBe(false);
     expect('persona' in DEFAULT_SETTINGS).toBe(false);
+  });
+
+  it('start_battle passes the topic next to the viz channel', async () => {
+    await new TauriClient().startBattle('Darf man lügen?', () => {});
+    expect(invoke).toHaveBeenCalledWith('start_battle', expect.objectContaining({ topic: 'Darf man lügen?', onViz: expect.anything() }));
+  });
+
+  it('battle frames carry per-speaker levels, phase and prepared; word pieces a speaker', () => {
+    const bands = new Array<number>(16).fill(0);
+    const piece: WordPiece = { seq: 3, text: ' Nein', speaker: 'daemon' };
+    const f = {
+      t: 2, model: { rms: 0.2, bands }, mic: { rms: 0, bands: new Array<number>(8).fill(0) }, latencyMs: 0, words: [piece],
+      battle: { angel: { rms: 0.01, bands }, daemon: { rms: 0.2, bands }, phase: 'playing', prepared: 1 },
+    } satisfies VizFrame;
+    expect(f.battle.daemon.bands).toHaveLength(16);
+    expect(f.words[0].speaker).toBe('daemon');
   });
 });
 

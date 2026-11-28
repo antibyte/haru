@@ -21,7 +21,7 @@ export const MESSAGE_KEYS = [
   'workerUnresponsive', 'lagLimitBacklog', 'lagLimit',
   // warnings and notices
   'cpuSlow', 'noCapableGpu', 'smallGpu', 'backendCrashedSwitched', 'backendFailedSwitched', 'segmentRenewed',
-  'aecUnavailable', 'aecFailed',
+  'aecUnavailable', 'aecFailed', 'battleUnsupported', 'battleTopic',
 ] as const;
 export type MessageKey = typeof MESSAGE_KEYS[number];
 /** Placeholder values; numbers are shown with one decimal in the active language. */
@@ -36,8 +36,15 @@ export type DownloadEvent =
   | { event: 'verifying'; data: { done: number; total: number } }
   | { event: 'done'; data: { path: string } }
   | { event: 'error'; data: UiText };
-export interface WordPiece { seq: number; text: string }
-export interface VizFrame { t: number; model: { rms: number; bands: number[] }; mic: { rms: number; bands: number[] }; latencyMs: number; words: WordPiece[] }
+/** Who speaks in a battle: the angel (Haru) or the daemon (Mephisto). */
+export type Speaker = 'angel' | 'daemon';
+export interface WordPiece { seq: number; text: string; speaker?: Speaker }
+/** Played audio of one voice: RMS and 16 bands. */
+export interface Levels { rms: number; bands: number[] }
+export type BattlePhase = 'preparing' | 'playing' | 'paused';
+/** Battle only: each voice's levels, the buffer phase and the start progress (0..1). */
+export interface BattleViz { angel: Levels; daemon: Levels; phase: BattlePhase; prepared: number }
+export interface VizFrame { t: number; model: Levels; mic: { rms: number; bands: number[] }; latencyMs: number; words: WordPiece[]; battle?: BattleViz }
 export type Quality = 'auto' | 'low' | 'medium' | 'high' | 'ultra';
 export type QualityLevel = Exclude<Quality, 'auto'>;
 /** Which Haru the user picked on the start screen. */
@@ -59,7 +66,8 @@ export interface AudioDevices { inputs: string[]; outputs: string[]; defaultInpu
 export interface DeviceInfo { variant: Backend; name: string; description: string; kind: 'cpu' | 'gpu' | 'igpu'; memoryTotal: number }
 export interface BackendOptions { variants: Backend[]; devices: DeviceInfo[]; cudaAvailable: boolean; backendsDir: string | null }
 export interface AttemptInfo { backend: Backend; device: string; description: string }
-export interface BootInfo { backend: Backend; device: string; deviceName: string; modelPath: string; plan: AttemptInfo[]; warning: UiText | null }
+/** `battle`: the loaded worker advertised the battle feature. */
+export interface BootInfo { backend: Backend; device: string; deviceName: string; modelPath: string; plan: AttemptInfo[]; warning: UiText | null; battle: boolean }
 
 export interface HaruClient {
   getStatus(): Promise<StateEvent>;

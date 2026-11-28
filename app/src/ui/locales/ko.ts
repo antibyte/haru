@@ -140,6 +140,8 @@ export const ko: Strings = {
     segmentRenewed: '새 대화 구간이에요. Haru가 처음부터 새로 시작해요.',
     aecUnavailable: '에코 제거를 사용할 수 없어요. 헤드폰을 사용하세요.',
     aecFailed: '에코 제거가 작동을 멈췄어요. 헤드폰을 사용하세요.',
+    battleUnsupported: '음성 모델 프로세스가 천사 vs. 악마 모드를 지원하지 않아요. Haru를 업데이트하세요.',
+    battleTopic: '주제를 입력하세요.',
     // frontend only
     unexpected: '예기치 않은 오류가 발생했어요.',
   },

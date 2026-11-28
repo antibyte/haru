@@ -140,6 +140,8 @@ export const fr: Strings = {
     segmentRenewed: 'Nouvelle partie de la conversation – Haru repart de zéro.',
     aecUnavailable: 'Annulation d’écho indisponible – veuillez utiliser un casque.',
     aecFailed: 'L’annulation d’écho ne fonctionne plus – veuillez utiliser un casque.',
+    battleUnsupported: 'Le processus du modèle vocal ne prend pas en charge « Ange contre Démon ». Veuillez mettre Haru à jour.',
+    battleTopic: 'Veuillez saisir un sujet.',
     // frontend only
     unexpected: 'Erreur inattendue.',
   },

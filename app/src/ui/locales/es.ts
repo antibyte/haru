@@ -137,6 +137,8 @@ export const es: Strings = {
     segmentRenewed: 'Nuevo tramo de la conversación: Haru empieza de cero.',
     aecUnavailable: 'Cancelación de eco no disponible: usa auriculares.',
     aecFailed: 'La cancelación de eco dejó de funcionar: usa auriculares.',
+    battleUnsupported: 'El proceso del modelo de voz no admite «Ángel vs. Demonio». Actualiza Haru.',
+    battleTopic: 'Escribe un tema.',
     // frontend only
     unexpected: 'Error inesperado.',
   },

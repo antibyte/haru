@@ -137,6 +137,8 @@ export const ja: Strings = {
     segmentRenewed: '会話を新しく区切りました。Haru はまっさらな状態から始めます。',
     aecUnavailable: 'エコーキャンセルを利用できません。ヘッドホンを使用してください。',
     aecFailed: 'エコーキャンセルが停止しました。ヘッドホンを使用してください。',
+    battleUnsupported: '音声モデルのプロセスが「天使 vs. 悪魔」に対応していません。Haru を更新してください。',
+    battleTopic: 'テーマを入力してください。',
     // frontend only
     unexpected: '予期しないエラーが発生しました。',
   },
