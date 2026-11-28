@@ -9,6 +9,7 @@ const EDITABLE = new Set(['INPUT', 'TEXTAREA', 'SELECT']);
 export function bindKeys(h: KeyHandlers): () => void {
   const onKey = (e: KeyboardEvent) => {
     if (e.ctrlKey || e.altKey || e.metaKey || e.repeat) return;
+    if (e.isComposing) return;
     const t = e.target as HTMLElement | null;
     const editable = !!t && (EDITABLE.has(t.tagName) || t.isContentEditable);
     if (e.key === 'Escape') { h.escape(); return; }

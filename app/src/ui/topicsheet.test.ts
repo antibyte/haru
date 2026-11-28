@@ -91,6 +91,17 @@ describe('TopicSheet', () => {
     expect(start).not.toHaveBeenCalled();
     expect(sheet().classList.contains('is-visible')).toBe(false);
   });
+  it('IME composition neither closes nor submits the sheet', () => {
+    const start = vi.fn(); const closed = vi.fn();
+    new TopicSheet(root).open(start, closed);
+    input().dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', isComposing: true, bubbles: true, cancelable: true }));
+    expect(sheet().classList.contains('is-visible')).toBe(true);
+    expect(closed).not.toHaveBeenCalled();
+    const enter = new KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true, cancelable: true });
+    input().dispatchEvent(enter);
+    expect(enter.defaultPrevented).toBe(true);
+    expect(start).not.toHaveBeenCalled();
+  });
   it('Tab and Shift+Tab stay inside the sheet', () => {
     new TopicSheet(root).open(vi.fn());
     const key = (el: Element, shiftKey: boolean) => el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey, bubbles: true, cancelable: true }));

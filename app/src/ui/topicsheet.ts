@@ -58,6 +58,9 @@ export class TopicSheet {
     this.input.maxLength = TOPIC_MAX;
     this.input.autocomplete = 'off';
     this.input.spellcheck = false;
+    this.input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && (e.isComposing || e.keyCode === 229)) e.preventDefault(); // commit the IME, do not submit
+    });
     const dice = document.createElement('button');
     dice.type = 'button';
     dice.className = 'icon-btn topic-dice';
@@ -97,7 +100,7 @@ export class TopicSheet {
         const i = f.indexOf(document.activeElement as HTMLElement);
         f[i < 0 ? (e.shiftKey ? f.length - 1 : 0) : (i + (e.shiftKey ? f.length - 1 : 1)) % f.length].focus();
       }
-      if (e.key === 'Escape' && this.isOpen) { e.preventDefault(); this.close(); }
+      if (e.key === 'Escape' && this.isOpen && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); this.close(); }
     });
     root.append(this.rootEl);
     this.renderPlaceholder();
