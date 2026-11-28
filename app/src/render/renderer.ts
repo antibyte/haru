@@ -7,14 +7,16 @@ import { PostFX } from '../post/pipeline';
 import { QUALITY_TABLE, QualityController, type QualityParams } from './quality';
 import { BUDGET_TIERS, ModelFirstController, minQuality, type PostTier, type RenderBudget } from './modelfirst';
 import { AudioCoupling, type CouplingMode } from '../audio/coupling';
-import { FeatureSmoother, type SmoothedAudio } from '../audio/features';
+import { FeatureSmoother, type SmoothedAudio, type VizFrameLike } from '../audio/features';
 import { GlyphRasterizer } from '../words/glyphs';
 import { WordInjector } from '../words/injector';
 import { WordPath } from '../words/path';
-import { WordAssembler, type WordEvent } from '../words/assembler';
-import { FaceLayer, TEXTURED_HEADS, parseHeadOverride } from '../heads/face';
-import type { Persona } from '../ipc/types';
-import type { Quality, QualityLevel, VizFrame } from '../ipc/types';
+import { WordAssembler, wordIds, type WordEvent } from '../words/assembler';
+import { FaceLayer, TEXTURED_HEADS, parseHeadOverride, type FacePost } from '../heads/face';
+import type { Persona, Quality, QualityLevel, Speaker, VizFrame } from '../ipc/types';
+import { ShotDirector, type ShotView } from '../heads/shot';
+import { ArrowInk } from './arrowink';
+import type { ArrowPair } from '../ui/arrows';
 
 import baseVert from '../fluid/shaders/base.vert?raw';
 import displayFrag from '../fluid/shaders/display.frag?raw';
@@ -24,6 +26,17 @@ const DEFAULT_LIGHT = { x: 0.5, y: 0.6 };
 const RESIZE_DEBOUNCE_MS = 140;
 /** Tolerance so a 30 fps cap still renders every 2nd frame of a 60 Hz display despite rAF jitter. */
 const CAP_SLACK_MS = 3;
+
+/** A battle voice's feature input has no microphone side. */
+const NO_MIC: VizFrameLike['mic'] = { rms: 0, bands: [] };
+
+/** Per-battle state: shot/reverse shot, per-voice smoothing and word assembly. */
+interface BattleState {
+  director: ShotDirector;
+  smooth: Record<Speaker, FeatureSmoother>;
+  words: Record<Speaker, WordAssembler>;
+  view: ShotView;
+}
 
 function hsv(h: number, s: number, v: number): RGB {
   const i = Math.floor(h * 6);
@@ -97,7 +110,17 @@ export class Renderer {
   private readonly coupling: AudioCoupling;
   private readonly glyphs: GlyphRasterizer;
   private readonly injector: WordInjector;
-  private readonly assembler = new WordAssembler();
+  /** One id source for every assembler, so word ids never collide between voices or conversations. */
+  private readonly wordId = wordIds();
+  private readonly assembler = new WordAssembler(this.wordId);
+  private battle: BattleState | null = null;
+  /** The daemon's face in battles (the angel uses `face`); created on the first battle. */
+  private battleFace: FaceLayer | null = null;
+  private faceShown = true;
+  private faceGender: 'female' | 'male' | null = null;
+  /** The face inputs for the composite this frame (scaled by the shot dissolve in battles). */
+  private facePost: FacePost | null = null;
+  private readonly arrows: ArrowInk;
   private readonly face: FaceLayer;
   private readonly wordCbs: Array<(e: WordEvent) => void> = [];
   private readonly path = new WordPath({ candidates: 48 });
@@ -131,6 +154,7 @@ export class Renderer {
     this.coupling = new AudioCoupling(this.sim);
     this.glyphs = new GlyphRasterizer(this.glc.gl);
     this.injector = new WordInjector(this.sim, this.glyphs, this.path);
+    this.arrows = new ArrowInk(this.glc.gl, this.sim);
     // debug only: ?head=<angel-female|angel-male|daemon> pins a head
     const head = this.debug ? parseHeadOverride(this.params.get('head')) : null;
     this.face = new FaceLayer(this.glc, undefined, TEXTURED_HEADS, head?.key ?? null);
@@ -207,10 +231,15 @@ export class Renderer {
 
     const f = this.pendingViz;
     this.pendingViz = null;
-    this.audio = this.smoother.update(this.mode === 'talking' ? f : null, frameMs);
+    const live = this.mode === 'talking' ? f : null;
+    this.audio = this.smoother.update(live, frameMs);
+    const shot = this.battle ? this.battleShot(this.battle, live, frameMs) : null;
+    const face = shot?.face ?? this.face;
+    const faceAudio = shot?.audio ?? this.audio;
     const center = this.injector.activeCenter();
     this.coupling.update(this.audio, frameMs, now, center, this.mode, this.downloadBps);
     this.injector.update(now, this.coupling.haruTint(this.audio));
+    this.arrows.update(now);
     const target = center ?? DEFAULT_LIGHT;
     const k = 1 - Math.exp(-dt / 0.25);
     this.lightPos.x += (target.x - this.lightPos.x) * k;
@@ -218,15 +247,17 @@ export class Renderer {
     this.caRms += (this.audio.modelRms - this.caRms) * 0.2;
 
     // the face: lipsync + G-buffer first, so the fluid step sees this frame's silhouette
-    this.face.update({
-      frameMs, timeSec: this.timeSec, audio: this.audio, mode: this.mode, tier: this.budget.tier,
+    face.update({
+      frameMs, timeSec: this.timeSec, audio: faceAudio, mode: this.mode, tier: this.budget.tier,
       dyeW: this.sim.dye.width, dyeH: this.sim.dye.height, aspect: this.canvas.width / Math.max(1, this.canvas.height),
       lightPos: this.lightPos,
     });
-    this.face.applyObstacle(this.sim);
-    this.face.emitMouth(this.sim, this.audio.modelRms, this.timeSec, Math.min(3, frameMs / (1000 / 60)), this.coupling.haruTint(this.audio));
-
-    this.face.seedMist(this.sim, this.timeSec, Math.min(3, frameMs / (1000 / 60)), this.coupling.haruTint(this.audio));
+    face.applyObstacle(this.sim);
+    const fk = Math.min(3, frameMs / (1000 / 60));
+    face.emitMouth(this.sim, faceAudio.modelRms, this.timeSec, fk, this.coupling.haruTint(this.audio));
+    face.seedMist(this.sim, this.timeSec, fk, this.coupling.haruTint(this.audio));
+    const post = face.postInputs;
+    this.facePost = post && shot && shot.gain < 1 ? { ...post, amount: post.amount * shot.gain } : post;
     this.sim.step(dt);
     this.drawScreen();
     this.updateQuality(frameMs, now);
@@ -268,11 +299,17 @@ export class Renderer {
     if (m !== this.mode) this.modelFirst.reset(); // the policy is only active while talking
     this.mode = m; if (m !== 'boot') this.downloadBps = 0;
     this.face.setMode(m);
+    this.battleFace?.setMode(m);
   }
   /** Settings: "Gesicht im Nebel" on/off and the voice gender that picks the angel head (male, otherwise female). */
   setFace(show: boolean, gender: 'female' | 'male' | null): void {
-    this.face.setGender(gender);
-    this.face.setEnabled(show);
+    this.faceShown = show;
+    this.faceGender = gender;
+    for (const f of [this.face, this.battleFace]) {
+      if (!f) continue;
+      f.setGender(gender);
+      f.setEnabled(show);
+    }
   }
   /**
    * null = start screen / neutral. angel = textured angel head by voice gender (angel-female / angel-male) + neutral
@@ -281,17 +318,52 @@ export class Renderer {
   setPersona(p: Persona | null): void {
     this.face.setPersona(p);
     const ember = p === 'daemon';
-    this.coupling.setPalette(ember ? 'ember' : 'neutral');
-    this.sim.params.ember = ember ? 1 : 0;
+    this.applyPalette(ember);
     this.injector.ember = ember;
     this.emberAmt = ember ? 1 : 0;
   }
+  /**
+   * Battle on: the angel head (by voice gender) and the daemon head both load once the mode is `talking`; shot/reverse
+   * shot shows one of them. Off: back to the single conversation face.
+   */
+  setBattle(on: boolean): void {
+    if (!on) { this.battle = null; return; }
+    if (!this.battleFace) {
+      this.battleFace = new FaceLayer(this.glc, undefined, TEXTURED_HEADS, null);
+      this.battleFace.setGender(this.faceGender);
+      this.battleFace.setEnabled(this.faceShown);
+    }
+    this.battleFace.setPersona('daemon');
+    this.battleFace.setMode(this.mode);
+    this.face.setPersona('angel');
+    this.injector.ember = false;
+    this.applyPalette(false);
+    this.emberAmt = 0;
+    this.battle = {
+      director: new ShotDirector(),
+      smooth: { angel: new FeatureSmoother(), daemon: new FeatureSmoother() },
+      words: { angel: new WordAssembler(this.wordId, 'angel'), daemon: new WordAssembler(this.wordId, 'daemon') },
+      view: { speaker: 'angel', gain: 1, ember: 0 },
+    };
+  }
+  /** The chooser's hover arrows (null = let them dissolve). */
+  setArrows(pair: ArrowPair | null): void { this.arrows.set(pair); }
   setDownloadRate(bps: number): void { this.downloadBps = Math.max(0, bps); }
   pushViz(f: VizFrame): void {
     this.pendingViz = f;
     this.lastViz = f;
     this.latencyMs = f.latencyMs;
     const now = performance.now();
+    const b = this.battle;
+    if (b) {
+      // each voice has its own word stream; only the shown speaker's words move the shown lips
+      for (const p of f.words) {
+        const sp: Speaker = p.speaker ?? 'angel';
+        this.dispatchWords(b.words[sp].push(p), now);
+        if (sp === b.view.speaker) this.faceOf(sp).pushPieces([p.text]);
+      }
+      return;
+    }
     for (const p of f.words) this.dispatchWords(this.assembler.push(p), now);
     this.face.pushPieces(f.words.map((p) => p.text));
   }
@@ -306,6 +378,7 @@ export class Renderer {
     const now = performance.now();
     this.dispatchWords(this.assembler.flush(), now);
     this.assembler.reset();
+    if (this.battle) for (const a of Object.values(this.battle.words)) { this.dispatchWords(a.flush(), now); a.reset(); }
     this.smoother.reset();
     this.pendingViz = null;
   }
@@ -315,6 +388,33 @@ export class Renderer {
       this.injector.handle(ev, now);
       for (const cb of this.wordCbs) cb(ev);
     }
+  }
+
+  private applyPalette(ember: boolean): void {
+    this.coupling.setPalette(ember ? 'ember' : 'neutral');
+    this.sim.params.ember = ember ? 1 : 0;
+  }
+
+  private faceOf(s: Speaker): FaceLayer {
+    return s === 'daemon' && this.battleFace ? this.battleFace : this.face;
+  }
+
+  /** One battle frame: per-voice levels → shot/reverse shot; the face to draw, its audio and the dissolve gain. */
+  private battleShot(b: BattleState, f: VizFrame | null, frameMs: number): { face: FaceLayer; audio: SmoothedAudio; gain: number } {
+    const lv = f?.battle;
+    const a = b.smooth.angel.update(lv ? { model: lv.angel, mic: NO_MIC } : null, frameMs);
+    const d = b.smooth.daemon.update(lv ? { model: lv.daemon, mic: NO_MIC } : null, frameMs);
+    const view = b.director.update({ angel: a.modelRms, daemon: d.modelRms }, frameMs);
+    if (view.speaker !== b.view.speaker) this.applyPalette(view.speaker === 'daemon');
+    b.view = view;
+    this.emberAmt = view.ember;
+    const [shown, other] = view.speaker === 'angel' ? [a, d] : [d, a];
+    return {
+      face: this.faceOf(view.speaker),
+      // lipsync follows the shown voice; the other voice is the one it listens to
+      audio: { modelRms: shown.modelRms, modelCentroid: shown.modelCentroid, micRms: other.modelRms, micCentroid: other.modelCentroid },
+      gain: view.gain,
+    };
   }
 
   // ------------------------------------------------------------------ quality + GPU timing
@@ -379,7 +479,7 @@ export class Renderer {
       rms: this.caRms,
       lightPos: this.lightPos,
       ember: this.emberAmt,
-    }, this.faceDebug && this.face.postInputs ? { ...this.face.postInputs, debug: true } : this.face.postInputs);
+    }, this.faceDebug && this.facePost ? { ...this.facePost, debug: true } : this.facePost);
   }
 
   // ------------------------------------------------------------------ debug
