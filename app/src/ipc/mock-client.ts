@@ -71,7 +71,7 @@ const BATTLE_TURNS: Record<MockLang, Turn[]> = {
 };
 
 function topicPieces(topic: string, lang: MockLang): string[] {
-  const t = topic.trim();
+  const t = [...topic.trim()].slice(0, 120).join('');
   if (lang === 'ja') {
     const chars = [...t];
     const out: string[] = [];
@@ -111,7 +111,7 @@ function bandsFor(n: number, peak: number, amp: number, jitter: number): number[
 }
 
 function levelsFor(text: string, t: number, offset: number): Levels {
-  if (text.trim() === '') return { rms: 0.01, bands: new Array<number>(16).fill(0) };
+  if (text.trim() === '') return { rms: 0, bands: new Array<number>(16).fill(0) };
   const rms = 0.12 + 0.1 * Math.abs(Math.sin(2 * Math.PI * (1.3 * t + offset)));
   return { rms, bands: bandsFor(16, 0.5 + 0.45 * Math.sin(2 * Math.PI * (0.35 * t + offset)), rms * 3.2, 0.02) };
 }

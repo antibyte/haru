@@ -38,9 +38,10 @@ describe('mock battle', () => {
   it('de, en and ja alternate speakers, with a short aside, and end with a gap', () => {
     for (const lang of ['de', 'en', 'ja'] as const) {
       const tl = battleTimeline(lang, 'X');
-      const turns = tl.map((f) => (f.angel.trim() && !f.daemon.trim() ? 'a' : f.daemon.trim() && !f.angel.trim() ? 'd' : ''))
-        .filter((s) => s !== '').filter((s, i, a) => s !== a[i - 1]).join('');
-      expect(turns.startsWith('adad'), lang).toBe(true);
+      const sym = tl.map((f) => (f.angel.trim() && f.daemon.trim() ? 'x' : f.angel.trim() ? 'a' : f.daemon.trim() ? 'd' : '_')).join('');
+      const speakers = sym.split('_').filter((s) => s !== '').map((s) => s.replace(/x/g, '')[0]);
+      expect(speakers.slice(0, 4).join(''), lang).toBe('adad');
+      expect(speakers.every((s, i) => i === 0 || s !== speakers[i - 1]), lang).toBe(true);
       expect(tl.some((f) => f.angel.trim() !== '' && f.daemon.trim() !== ''), lang).toBe(true);
       expect(tl.slice(-22).every((f) => f.angel === '' && f.daemon === ''), lang).toBe(true);
     }
@@ -67,8 +68,8 @@ describe('mock battle', () => {
     const words = frames.flatMap((f) => f.words).filter((w) => w.text.trim() !== '');
     expect(words[0]).toMatchObject({ speaker: 'angel', text: ' Me' });
     expect(words.some((w) => w.speaker === 'daemon')).toBe(true);
-    expect(frames.some((f) => f.battle!.angel.rms > 0.1 && f.battle!.daemon.rms === 0.01)).toBe(true);
-    expect(frames.some((f) => f.battle!.daemon.rms > 0.1 && f.battle!.angel.rms === 0.01)).toBe(true);
+    expect(frames.some((f) => f.battle!.angel.rms > 0.1 && f.battle!.daemon.rms === 0)).toBe(true);
+    expect(frames.some((f) => f.battle!.daemon.rms > 0.1 && f.battle!.angel.rms === 0)).toBe(true);
     for (const f of frames) {
       expect(f.model.rms).toBe(Math.max(f.battle!.angel.rms, f.battle!.daemon.rms));
       expect(f.mic.rms).toBe(0);

@@ -105,6 +105,13 @@ describe('IPC contract fixtures', () => {
     expect(f.battle.daemon.bands).toHaveLength(16);
     expect(f.words[0].speaker).toBe('daemon');
   });
+
+  it('vizFrameBattle and bootInfo match the battle types', () => {
+    const f = fixtures.vizFrameBattle as VizFrame;
+    expect(f.battle!.daemon.bands).toHaveLength(16);
+    expect(f.words[0]).toEqual({ seq: 3, text: ' nein', speaker: 'daemon' });
+    expect(typeof fixtures.bootInfo.battle).toBe('boolean');
+  });
 });
 
 describe('toHaruError', () => {
