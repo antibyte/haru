@@ -261,6 +261,32 @@ mod tests {
         assert_eq!(card(Persona::Daemon, "xx"), card(Persona::Daemon, "de"));
     }
 
+    /// The last sentence of the angel's situation: Haru opens and asks the question.
+    const ANGEL_CUES: [(&str, &str); 9] = [
+        ("de", "Haru eröffnet und stellt Mephisto die Frage."),
+        ("en", "Haru opens and puts the question to Mephisto."),
+        ("es", "Haru abre la conversación y le plantea la pregunta a Mephisto."),
+        ("fr", "Haru ouvre et pose la question à Mephisto."),
+        ("ja", "ハルが口火を切り、メフィストにその問いを投げかける。"),
+        ("ko", "Haru가 먼저 시작해서 Mephisto에게 그 질문을 던진다."),
+        ("pt", "Haru abre a conversa e faz a pergunta a Mephisto."),
+        ("ru", "Haru начинает и задаёт Mephisto этот вопрос."),
+        ("zh", "Haru先开口，向Mephisto提出这个问题。"),
+    ];
+
+    /// The last sentence of the daemon's situation: he stays scornful and never concedes.
+    const DAEMON_SCORN: [(&str, &str); 9] = [
+        ("de", "Mephisto bleibt dabei spöttisch und gibt Haru nie recht."),
+        ("en", "Mephisto stays scornful throughout and never admits that Haru is right."),
+        ("es", "Mephisto se mantiene burlón y nunca le da la razón a Haru."),
+        ("fr", "Mephisto reste moqueur et ne donne jamais raison à Haru."),
+        ("ja", "メフィストは終始あざけるような態度を崩さず、ハルを正しいと認めることは決してない。"),
+        ("ko", "Mephisto는 끝까지 비웃는 태도를 유지하며 Haru가 옳다고 절대 인정하지 않는다."),
+        ("pt", "Mephisto continua zombeteiro e nunca dá razão a Haru."),
+        ("ru", "Mephisto остаётся насмешливым и никогда не признаёт правоту Haru."),
+        ("zh", "Mephisto始终保持嘲讽，从不承认Haru是对的。"),
+    ];
+
     #[test]
     fn every_language_has_both_battle_cards() {
         for lang in LANGUAGES {
@@ -272,10 +298,13 @@ mod tests {
             assert_eq!((a.other_name.as_str(), d.other_name.as_str()), (d.name.as_str(), a.name.as_str()), "{lang}");
             assert_eq!((a.gender.as_str(), d.gender.as_str()), ("female", "male"), "{lang}");
             assert_eq!((a.backchannel.as_str(), d.backchannel.as_str()), ("mid", "low"), "{lang}");
-            assert_eq!(a.situation.matches("{topic}").count(), 2, "{lang}: the question and the opening sentence");
-            assert_eq!(d.situation.matches("{topic}").count(), 1, "{lang}");
-            assert!(a.situation.starts_with(&d.situation), "{lang}: one shared situation, the angel's adds the opening");
-            assert!([", ", "、", "，"].iter().any(|c| a.situation.contains(&format!("{}{c}{{topic}}", a.other_name))), "{lang}: the opening addresses Mephisto");
+            assert_eq!((a.situation.matches("{topic}").count(), d.situation.matches("{topic}").count()), (1, 1), "{lang}: the question, once");
+            let cue = ANGEL_CUES.iter().find(|(l, _)| *l == lang).expect("a cue per language").1;
+            let scorn = DAEMON_SCORN.iter().find(|(l, _)| *l == lang).expect("a scorn sentence per language").1;
+            assert!(a.situation.ends_with(cue), "{lang}: the angel's situation ends with the opening cue");
+            assert!(d.situation.ends_with(scorn), "{lang}: the daemon's situation ends with the scorn sentence");
+            assert_eq!(a.situation.split(cue).next().unwrap().split_once("{topic}").map(|x| x.0), d.situation.split_once("{topic}").map(|x| x.0), "{lang}: both open the same scene");
+            assert!(a.situation.contains(&a.name) && a.situation.contains(&d.name) && d.situation.contains(&d.name), "{lang}");
             for t in [&a.persona, &a.relationship, &d.persona, &d.relationship] {
                 assert!(!t.contains('{') && !t.trim().is_empty(), "{lang}");
             }
@@ -355,7 +384,9 @@ mod tests {
             }
         }
         let a = battle_card(Persona::Angel, "de").render("Ist eine Notlüge erlaubt?");
-        assert!(a.situation.ends_with("„Mephisto, Ist eine Notlüge erlaubt?“"));
+        assert_eq!(a.situation.matches("Ist eine Notlüge erlaubt?").count(), 1, "the topic is filled once");
+        assert!(a.situation.contains("über die Frage: „Ist eine Notlüge erlaubt?“ Haru hält"));
+        assert!(a.situation.ends_with("Haru eröffnet und stellt Mephisto die Frage."));
     }
 
     #[test]

@@ -6,6 +6,6 @@
     "gender": "female",
     "backchannel": "mid",
     "relationship": "Haru의 상대는 같은 기계에 사는 아주 오래된 악마이자 교활한 유혹자 Mephisto다. Haru는 아직도 Mephisto를 선으로 돌려세울 수 있기를 바란다.",
-    "situation": "Haru와 Mephisto가 다투는 질문: “{topic}” Haru는 정직하고 배려하는 좋은 쪽을 맡는다. Mephisto는 편하고 이기적인 쪽을 맡는다. 둘은 오랜 사이라 자기소개는 하지 않는다. 한두 문장씩 짧게 주고받으며 질문에서 벗어나지 않는다. Mephisto는 Haru의 마지막 주장에 반박하고 편한 쪽의 구체적인 이점을 든다. Haru는 정직하고 배려하는 쪽의 구체적인 이유나 예로 답한다. 누구도 그냥 동의하거나 상대의 질문을 칭찬하지 않는다. 그 자리에 인간은 없다. Haru는 정확히 이 문장으로 시작한다. “Mephisto, {topic}”"
+    "situation": "Haru와 Mephisto는 같은 기계 안에 함께 갇혀 있고, 오늘도 둘만의 자리에서 이런 질문으로 다툰다: “{topic}” Haru는 따뜻함과 유머와 좋은 이유로 맞서며 Mephisto에게 직접 대답한다. 두 사람은 아주 자연스럽게, 짧은 문장으로 이야기한다. Haru가 먼저 시작해서 Mephisto에게 그 질문을 던진다."
   }
 }

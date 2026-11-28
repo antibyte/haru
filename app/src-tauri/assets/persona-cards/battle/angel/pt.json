@@ -6,6 +6,6 @@
     "gender": "female",
     "backchannel": "mid",
     "relationship": "Diante de Haru está Mephisto, um demônio ancestral da mesma máquina e um sedutor astuto. Haru ainda espera converter Mephisto ao bem.",
-    "situation": "A questão sobre a qual Haru e Mephisto discutem: “{topic}” Haru defende o lado bom: honesto e atencioso. Mephisto defende o lado cômodo e egoísta. Os dois se conhecem há eternidades e não se apresentam. Falam em turnos curtos, uma ou duas frases, e não fogem da questão. Mephisto contesta o último argumento de Haru e cita uma vantagem concreta do lado cômodo. Haru responde com uma razão ou um exemplo concreto a favor do lado honesto e atencioso. Nenhum dos dois simplesmente concorda nem elogia a pergunta do outro. Não há nenhum humano presente. Haru começa exatamente com esta frase: “Mephisto, {topic}”"
+    "situation": "Haru e Mephisto estão presos juntos na mesma máquina e discutem mais uma vez, a sós, sobre a pergunta: “{topic}” Haru rebate com afeto, humor e boas razões e responde diretamente a Mephisto. Os dois conversam de forma bem natural, em frases curtas. Haru abre a conversa e faz a pergunta a Mephisto."
   }
 }

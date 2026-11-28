@@ -6,6 +6,6 @@
     "gender": "female",
     "backchannel": "mid",
     "relationship": "Haru的对手是Mephisto，同住一台机器的远古恶魔，狡猾的诱惑者。Haru仍希望把Mephisto引向善。",
-    "situation": "Haru和Mephisto争论的问题：“{topic}”Haru站在好的一边：诚实、体贴。Mephisto站在省事又自私的一边。两人相识已久，不做自我介绍。两人轮流发言，每次一两句，紧扣问题。Mephisto反驳Haru上一个论点，举出省事一边的具体好处。Haru用具体的理由或例子支持诚实、体贴的一边。谁都不轻易附和，也不夸对方的问题。现场没有人类。Haru开口第一句就是：“Mephisto，{topic}”"
+    "situation": "Haru和Mephisto一起困在同一台机器里，又一次关起门来争论这个问题：“{topic}”Haru带着温暖、幽默和充分的理由反驳，并直接回答Mephisto。两人说话非常自然，句子简短。Haru先开口，向Mephisto提出这个问题。"
   }
 }

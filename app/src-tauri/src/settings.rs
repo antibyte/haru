@@ -612,7 +612,8 @@ mod tests {
         assert_eq!((a.backchannel.as_deref(), d.backchannel.as_deref()), (Some("mid"), Some("low")));
         assert_eq!((a.speak_first, d.speak_first), (Some(true), Some(false)));
         assert_eq!((a.gender.as_deref(), d.gender.as_deref()), (Some("female"), Some("male")));
-        assert!(a.situation.as_deref().unwrap().ends_with("„Mephisto, Ist eine Notlüge erlaubt?“"));
+        assert!(a.situation.as_deref().unwrap().contains("über die Frage: „Ist eine Notlüge erlaubt?“"));
+        assert!(a.situation.as_deref().unwrap().ends_with("Haru eröffnet und stellt Mephisto die Frage."));
         assert!(d.situation.as_deref().unwrap().contains("„Ist eine Notlüge erlaubt?“"));
         assert_eq!(d.persona.as_deref(), Some(cards::battle_card(Persona::Daemon, "de").persona.as_str()));
     }
