@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ARROW_REACH, arrowEnvelope, arrowGeometry, arrowPolygon, arrowsFor, type Pt, type RectLike } from './arrows';
+import { ARROW_REACH, ARROW_WIDTH, arrowEnvelope, arrowGeometry, arrowPolygon, arrowsFor, type Pt, type RectLike } from './arrows';
 
 const r = (left: number, top: number, width: number, height: number): RectLike => ({ left, top, width, height });
 const CANVAS = r(0, 0, 1600, 900);
@@ -27,7 +27,8 @@ describe('arrows', () => {
     const a = arrowGeometry(WIDE, CANVAS).angel;
     const len = Math.hypot(445 - 845, 604 - 280);
     expect(Math.hypot(a.to[0] - 845, a.to[1] - 280)).toBeCloseTo(100 + ARROW_REACH * (len - 100), 6);
-    expect(a.width).toBeGreaterThan(0);
+    expect(ARROW_REACH).toBe(0.5);
+    expect(a.width).toBeCloseTo(ARROW_WIDTH * 200, 6);
   });
 
   it('stacked: the angel arrow points up, the daemon arrow down', () => {
@@ -36,6 +37,12 @@ describe('arrows', () => {
     expect(p.daemon.to[1]).toBeGreaterThan(p.daemon.from[1]);
     expect(p.angel.to[0]).toBeCloseTo(300, 6);
     expect(p.daemon.to[0]).toBeCloseTo(300, 6);
+  });
+
+  it('a VS centred exactly on an image gives finite numbers', () => {
+    const p = arrowGeometry({ vs: r(345, 404, 100, 100), angel: r(45, 308, 700, 292), daemon: r(845, 308, 709, 592) }, CANVAS);
+    for (const v of [...p.angel.from, ...p.angel.to, ...p.angel.target, p.angel.width]) expect(Number.isFinite(v)).toBe(true);
+    expect(arrowPolygon(p.angel.from, p.angel.to, p.angel.width).every((q) => Number.isFinite(q[0]) && Number.isFinite(q[1]))).toBe(true);
   });
 
   it('reduced motion gives no arrows', () => {

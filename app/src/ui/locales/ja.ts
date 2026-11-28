@@ -26,14 +26,14 @@ export const ja: Strings = {
     daemon: '悪魔',
     daemonSub: '腹黒く悪意に満ちた',
     battle: '天使 vs. 悪魔',
-    battleSub: 'Haru と Mephisto があるテーマで議論します',
+    battleSub: 'ハルとメフィストがあるテーマで議論します',
   },
   battle: {
-    topicLabel: 'Haru と Mephisto に何について議論させますか？',
+    topicLabel: 'ハルとメフィストに何について議論させますか？',
     topicPlaceholder: '候補：{topic}',
     dice: '別のテーマを選ぶ',
     start: '開始',
-    preparing: 'Haru と Mephisto が準備しています…',
+    preparing: 'ハルとメフィストが準備しています…',
     unsupported: '利用できません：音声モデルのプロセスが古すぎます。',
     topics: [
       '優しいうそはついてもいいですか？',
