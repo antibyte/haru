@@ -83,6 +83,27 @@ describe('TopicSheet', () => {
     expect(input().value).toBe('Mine');
     expect(input().placeholder).toBe(`候補：${TABLES.ja.battle.topics[2]}`);
   });
+  it('Escape closes without starting and reports the close once', () => {
+    const start = vi.fn(); const closed = vi.fn();
+    new TopicSheet(root).open(start, closed);
+    input().dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(closed).toHaveBeenCalledTimes(1);
+    expect(start).not.toHaveBeenCalled();
+    expect(sheet().classList.contains('is-visible')).toBe(false);
+  });
+  it('Tab and Shift+Tab stay inside the sheet', () => {
+    new TopicSheet(root).open(vi.fn());
+    const key = (el: Element, shiftKey: boolean) => el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey, bubbles: true, cancelable: true }));
+    const startBtn = root.querySelector<HTMLButtonElement>('.topic-start')!;
+    startBtn.focus(); key(startBtn, false);
+    expect(document.activeElement).toBe(input());
+    key(input(), true);
+    expect(document.activeElement).toBe(startBtn);
+    (document.activeElement as HTMLElement).blur();
+    key(input(), false); expect(document.activeElement).toBe(input());
+    (document.activeElement as HTMLElement).blur();
+    key(input(), true); expect(document.activeElement).toBe(startBtn);
+  });
   it('cancel closes without starting and reports the close', () => {
     const start = vi.fn(); const closed = vi.fn();
     const s = new TopicSheet(root);

@@ -26,7 +26,7 @@ export const ja: Strings = {
     daemon: '悪魔',
     daemonSub: '腹黒く悪意に満ちた',
     battle: '天使 vs. 悪魔',
-    battleSub: 'ハルとメフィストがあるテーマで議論します',
+    battleSub: 'ハルとメフィストが、あるテーマで議論します',
   },
   battle: {
     topicLabel: 'ハルとメフィストに何について議論させますか？',

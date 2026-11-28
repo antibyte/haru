@@ -136,6 +136,7 @@ export class PersonaChooser {
     this.rootEl.append(this.title, this.row);
     root.append(this.rootEl);
     window.addEventListener('resize', () => { if (this.isVisible) this.layout(); });
+    document.fonts?.ready.then(() => { if (this.isVisible) this.layout(); });
     this.relabel();
   }
 
@@ -210,6 +211,7 @@ export class PersonaChooser {
     this.vsSub.textContent = S.chooser.battleSub;
     this.vsHint.textContent = S.battle.unsupported;
     this.renderLabels();
+    if (this.isVisible) this.layout();
   }
 
   private renderLabels(): void {

@@ -97,6 +97,14 @@ describe('PersonaChooser', () => {
     expect(parseFloat(vs().style.width)).toBeCloseTo(177.6, 3);
     expect(parseFloat(vs().style.top)).toBeCloseTo(308 - VS_ABOVE * 177.6 + 88.8 - 308, 3);
   });
+  it('relabel() re-applies the placement while visible', () => {
+    ch.show(vi.fn());
+    const spy = vi.spyOn(ch, 'layout');
+    ch.relabel();
+    expect(spy).toHaveBeenCalledTimes(1);
+    ch.hide(); ch.relabel();
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
   it('without battle support the VS is dimmed with the hint and a click does nothing', () => {
     const onBattle = vi.fn(); ch.show(vi.fn(), onBattle); ch.setBattleAvailable(false);
     expect(vs().classList.contains('is-unavailable')).toBe(true);

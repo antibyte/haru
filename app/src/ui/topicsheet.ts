@@ -90,6 +90,15 @@ export class TopicSheet {
       cb(topic);
     });
     this.rootEl.append(scrim, form);
+    this.rootEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Tab') {
+        const f: HTMLElement[] = [this.input, dice, cancel, start];
+        e.preventDefault();
+        const i = f.indexOf(document.activeElement as HTMLElement);
+        f[i < 0 ? (e.shiftKey ? f.length - 1 : 0) : (i + (e.shiftKey ? f.length - 1 : 1)) % f.length].focus();
+      }
+      if (e.key === 'Escape' && this.isOpen) { e.preventDefault(); this.close(); }
+    });
     root.append(this.rootEl);
     this.renderPlaceholder();
   }
