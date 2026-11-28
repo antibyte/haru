@@ -17,7 +17,11 @@ pub const DEFAULT_NAME: &str = "Haru";
 /// silence (PAD/EOP) decision: near 0 Haru never speaks, far above 1 she talks nonstop.
 pub const TEMPERATURE_MIN: f64 = 0.3;
 pub const TEMPERATURE_MAX: f64 = 1.0;
-pub const TEMPERATURE_DEFAULT: f64 = 0.6;
+pub const TEMPERATURE_DEFAULT: f64 = 0.7;
+/// The temperature of a battle (same range): the two voices need more play than a chat.
+pub const BATTLE_TEMPERATURE_DEFAULT: f64 = 0.9;
+/// The voice chat default before 0.7; a settings file from then, without a battle temperature, is moved to the new one.
+const OLD_TEMPERATURE_DEFAULT: f64 = 0.6;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -27,7 +31,8 @@ pub struct Settings {
     pub gender: Option<String>,      // None | "female" | "male"
     pub backchannel: Option<String>, // None | "low" | "mid" | "high"
     pub speak_first: bool,           // true
-    pub temperature: f64,            // 0.6 (TEMPERATURE_DEFAULT)
+    pub temperature: f64,            // 0.7 (TEMPERATURE_DEFAULT)
+    pub battle_temperature: f64,     // 0.9 (BATTLE_TEMPERATURE_DEFAULT): the temperature of both speakers in a battle
     pub top_k: u32,                  // 25
     pub voice_path: Option<String>,  // None
     pub input_device: Option<String>,
@@ -51,6 +56,7 @@ impl Default for Settings {
             backchannel: None,
             speak_first: true,
             temperature: TEMPERATURE_DEFAULT,
+            battle_temperature: BATTLE_TEMPERATURE_DEFAULT,
             top_k: 25,
             voice_path: None,
             input_device: None,
@@ -97,7 +103,17 @@ pub fn load_with(path: &Path, os_locales: impl FnOnce() -> Vec<String>) -> Setti
         }
     };
     match serde_json::from_str::<Settings>(&text) {
-        Ok(s) => s.sanitized(os_locales),
+        Ok(mut s) => {
+            // A file from before the battle temperature still holds the old default of 0.6: move it to the new one.
+            // With a `battleTemperature` present the 0.6 is the user's own choice.
+            let predates_battle_temperature = serde_json::from_str::<serde_json::Value>(&text)
+                .map(|v| v.get("battleTemperature").is_none())
+                .unwrap_or(false);
+            if predates_battle_temperature && s.temperature == OLD_TEMPERATURE_DEFAULT {
+                s.temperature = TEMPERATURE_DEFAULT;
+            }
+            s.sanitized(os_locales)
+        }
         Err(_) => {
             let bad = sibling(path, ".bad");
             let _ = std::fs::remove_file(&bad);
@@ -145,6 +161,11 @@ impl Settings {
         } else {
             TEMPERATURE_DEFAULT
         };
+        self.battle_temperature = if self.battle_temperature.is_finite() {
+            self.battle_temperature.clamp(TEMPERATURE_MIN, TEMPERATURE_MAX)
+        } else {
+            BATTLE_TEMPERATURE_DEFAULT
+        };
         self
     }
 
@@ -154,6 +175,9 @@ impl Settings {
         }
         if !(TEMPERATURE_MIN..=TEMPERATURE_MAX).contains(&self.temperature) {
             return Err(invalid(MsgKey::TemperatureRange, format!("temperature={}", self.temperature)));
+        }
+        if !(TEMPERATURE_MIN..=TEMPERATURE_MAX).contains(&self.battle_temperature) {
+            return Err(invalid(MsgKey::TemperatureRange, format!("battle_temperature={}", self.battle_temperature)));
         }
         if self.top_k > 500 {
             return Err(invalid(MsgKey::TopKRange, format!("top_k={}", self.top_k)));
@@ -216,7 +240,7 @@ impl Settings {
 
     /// Options of a battle's two speakers, the angel's first: the battle cards with `topic`, Haru against Mephisto
     /// whatever the own name, the angel's voice gender from the setting (female without one), the daemon male, the
-    /// cards' backchannels, and the sampling as a dialogue sends it. The battle's `max_frames` sets each
+    /// cards' backchannels, the battle temperature and `top_k` as a dialogue sends it. The battle's `max_frames` sets each
     /// conversation's length, so `max_seconds` stays unset.
     pub fn battle_options(&self, topic: &str) -> [DialogueOptions; 2] {
         [Persona::Angel, Persona::Daemon].map(|p| {
@@ -235,7 +259,7 @@ impl Settings {
                 relationship: Some(card.relationship),
                 situation: Some(card.situation),
                 voice: self.voice_path.as_ref().map(|_| "user".to_string()),
-                temperature: Some(self.temperature),
+                temperature: Some(self.battle_temperature),
                 top_k: (self.top_k != 25).then_some(self.top_k),
                 speak_first: Some(p == Persona::Angel),
                 ..Default::default()
@@ -264,7 +288,8 @@ mod tests {
         assert_eq!(s.name, "Haru");
         assert!(s.gender.is_none() && s.backchannel.is_none() && s.voice_path.is_none());
         assert!(s.speak_first);
-        assert_eq!(s.temperature, 0.6);
+        assert_eq!(s.temperature, 0.7);
+        assert_eq!(s.battle_temperature, 0.9);
         assert_eq!(s.top_k, 25);
         assert_eq!((s.backend.as_str(), s.device.as_str(), s.quality.as_str()), ("auto", "auto", "auto"));
         assert!(!s.subtitles);
@@ -408,16 +433,61 @@ mod tests {
     }
 
     #[test]
+    fn the_battle_temperature_has_the_same_range_and_defaults_to_0_9() {
+        assert_eq!(serde_json::to_value(Settings::default()).unwrap()["battleTemperature"], json!(0.9));
+        for bad in [0.29, 1.01] {
+            let e = Settings { battle_temperature: bad, ..Default::default() }.validate().unwrap_err();
+            assert_eq!(e.key, MsgKey::TemperatureRange, "{bad}");
+        }
+        for ok in [0.3, 0.9, 1.0] {
+            assert!(Settings { battle_temperature: ok, ..Default::default() }.validate().is_ok());
+        }
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("settings.json");
+        for (stored, want) in [("1.5", 1.0), ("0", 0.3), ("0.45", 0.45)] {
+            std::fs::write(&p, format!(r#"{{"battleTemperature":{stored}}}"#)).unwrap();
+            assert_eq!(load(&p).battle_temperature, want, "stored {stored}");
+        }
+        std::fs::write(&p, "{}").unwrap();
+        assert_eq!(load(&p).battle_temperature, 0.9, "an old file without it");
+    }
+
+    #[test]
+    fn an_old_settings_file_with_the_old_default_temperature_moves_to_0_7() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("settings.json");
+        for (json, want) in [
+            (r#"{"temperature":0.6}"#, 0.7),
+            (r#"{"temperature":0.6,"battleTemperature":0.9}"#, 0.6),
+            (r#"{"temperature":0.6,"battleTemperature":0.6}"#, 0.6),
+            (r#"{"temperature":0.65}"#, 0.65),
+            (r#"{"temperature":0.8}"#, 0.8),
+            (r#"{}"#, 0.7),
+        ] {
+            std::fs::write(&p, json).unwrap();
+            assert_eq!(load(&p).temperature, want, "{json}");
+        }
+    }
+
+    #[test]
+    fn needs_reload_ignores_the_battle_temperature() {
+        let a = Settings::default();
+        assert!(!a.needs_reload(&Settings { battle_temperature: 0.5, ..a.clone() }));
+    }
+
+    #[test]
     fn sanitized_replaces_non_finite_temperature_with_default() {
         for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             let s = Settings { temperature: bad, ..Default::default() }.sanitized(no_os_locales);
-            assert_eq!(s.temperature, 0.6);
+            assert_eq!(s.temperature, 0.7);
+            let b = Settings { battle_temperature: bad, ..Default::default() }.sanitized(no_os_locales);
+            assert_eq!(b.battle_temperature, 0.9);
         }
     }
 
     #[test]
     fn dialogue_options_always_send_temperature() {
-        assert_eq!(opts_json(&Settings::default())["temperature"], json!(0.6));
+        assert_eq!(opts_json(&Settings::default())["temperature"], json!(0.7));
     }
 
     #[test]
@@ -562,10 +632,10 @@ mod tests {
 
     #[test]
     fn battle_options_send_sampling_as_today_and_never_max_seconds() {
-        for s in [Settings::default(), Settings { temperature: 0.9, top_k: 40, ..Default::default() }] {
+        for s in [Settings::default(), Settings { temperature: 0.4, battle_temperature: 0.5, top_k: 40, ..Default::default() }] {
             for o in s.battle_options("x") {
                 let v = serde_json::to_value(&o).unwrap();
-                assert_eq!(v["temperature"], json!(s.temperature));
+                assert_eq!(v["temperature"], json!(s.battle_temperature), "a battle uses its own temperature");
                 assert_eq!(v.get("top_k").cloned(), (s.top_k != 25).then(|| json!(s.top_k)));
                 assert!(v.get("max_seconds").is_none() && v.get("seed").is_none() && v.get("sample_rate").is_none(), "{v}");
             }
