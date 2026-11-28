@@ -58,7 +58,7 @@ impl BattleBuffer {
     /// Wall time per generated double frame in ms, from the first frame on, once 15 are generated.
     pub fn rate_ms(&self) -> Option<f64> {
         let first = self.first_at?;
-        (self.generated >= RATE_FRAMES).then(|| (self.last_at - first).as_secs_f64() * 1000.0 / (self.generated - 1) as f64)
+        (self.generated >= RATE_FRAMES).then(|| self.last_at.saturating_sub(first).as_secs_f64() * 1000.0 / (self.generated - 1) as f64)
     }
 
     /// Frames to buffer before preparing ends. On a device slower than real time, this is enough that the frames
@@ -199,6 +199,25 @@ mod tests {
         b.started(24);
         assert!(b.finished());
         assert_eq!(b.update(t), BattlePhase::Playing, "an ended battle never pauses");
+    }
+
+    #[test]
+    fn threshold_never_drops_below_22_near_the_end() {
+        let mut b = BattleBuffer::new(4500);
+        for i in 0..4490u64 {
+            b.generated(ms(i * 140));
+        }
+        b.started(4490);
+        b.generated(ms(4490 * 140)); // rate 140 ms, remaining 10
+        assert_eq!(b.start_threshold(), 22);
+    }
+
+    #[test]
+    fn the_rate_survives_time_going_backwards() {
+        let mut b = BattleBuffer::new(4500);
+        generate(&mut b, 14, 1000, 100);
+        b.generated(ms(0));
+        assert_eq!(b.rate_ms(), Some(0.0));
     }
 
     #[test]
