@@ -450,8 +450,8 @@
 }
 .subtitles.is-visible { opacity: 1; }
 .subtitles.is-fading { opacity: 0; transition-duration: 1.2s; }
-.subtitle-line { font-size: clamp(18px, 2.1vw, 28px); font-weight: 200; letter-spacing: 0.01em; line-height: 1.45; color: rgba(255, 255, 255, 0.62); }
-.sub-word { transition: color 0.4s, text-shadow 0.4s; }
+.subtitle-line { font-size: clamp(18px, 2.1vw, 28px); font-weight: 200; letter-spacing: 0.01em; line-height: 1.45; color: rgba(255, 255, 255, 0.62); overflow-wrap: anywhere; }
+.sub-word { transition: color 0.4s, text-shadow 0.4s; overflow-wrap: anywhere; }
 .sub-word.is-latest { color: #fff; text-shadow: 0 0 18px rgba(255, 190, 130, 0.65), 0 2px 22px rgba(0, 0, 0, 0.9); }
 .subtitle-line.is-angel { color: rgba(255, 214, 150, 0.74); }
 .subtitle-line.is-daemon { color: rgba(255, 120, 96, 0.85); }
